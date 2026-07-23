@@ -1,0 +1,261 @@
+import React, { useState, useEffect, useRef } from 'react';
+import AppShell from '../components/layout/AppShell';
+import { chatApi, ChatMessage } from '../api/chat';
+import { 
+  Send, Bot, User, Sparkles, Trash2, FileText, 
+  HelpCircle, RefreshCw, CheckCircle2, AlertCircle, ExternalLink 
+} from 'lucide-react';
+
+const SUGGESTED_QUESTIONS = [
+  "What is the student name and fee amount in the receipt?",
+  "Which college did the applicant attend for HSC?",
+  "Summarize the main details from the synced documents.",
+  "Are there any payment or fee receipts found?"
+];
+
+export default function AiChatPage() {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputQuestion, setInputQuestion] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [fetchingHistory, setFetchingHistory] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const loadHistory = async () => {
+    setFetchingHistory(true);
+    setError(null);
+    try {
+      const data = await chatApi.getHistory();
+      setMessages(data);
+    } catch (err: any) {
+      console.error('Failed to load chat history:', err);
+    } finally {
+      setFetchingHistory(false);
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, loading]);
+
+  const handleSend = async (questionText?: string) => {
+    const q = (questionText || inputQuestion).trim();
+    if (!q || loading) return;
+
+    setInputQuestion('');
+    setError(null);
+    setLoading(true);
+
+    // Optimistic UI addition for user question
+    const tempUserMsg: ChatMessage = {
+      id: 'temp-' + Date.now(),
+      question: q,
+      answer: null, // thinking
+      sources: [],
+      model_used: 'llama-3.3-70b-versatile',
+      created_at: new Date().toISOString()
+    };
+
+    setMessages((prev) => [...prev, tempUserMsg]);
+
+    try {
+      const res = await chatApi.ask(q);
+      setMessages((prev) => 
+        prev.map((msg) => (msg.id === tempUserMsg.id ? res : msg))
+      );
+    } catch (err: any) {
+      console.error('Chat error:', err);
+      const errMsg = err?.response?.data?.detail || 'Failed to get answer. Please check your connection.';
+      setError(errMsg);
+      setMessages((prev) => 
+        prev.map((msg) => 
+          msg.id === tempUserMsg.id 
+            ? { ...msg, answer: '⚠️ Error: ' + errMsg } 
+            : msg
+        )
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleClearHistory = async () => {
+    if (!window.confirm('Are you sure you want to clear your chat history?')) return;
+    try {
+      await chatApi.clearHistory();
+      setMessages([]);
+    } catch (err) {
+      console.error('Failed to clear history:', err);
+    }
+  };
+
+  return (
+    <AppShell>
+      <div className="flex flex-col h-[calc(100vh-6rem)] max-w-6xl mx-auto px-4 py-2">
+        {/* Header */}
+        <div className="flex items-center justify-between py-3 border-b border-white/10 mb-4">
+          <div className="flex items-center space-x-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-500/20">
+              <Sparkles className="w-5 h-5 text-white animate-pulse" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-white flex items-center gap-2">
+                AI Intelligence Chat
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  RAG Powered
+                </span>
+              </h1>
+              <p className="text-xs text-slate-400">Ask any question grounded in your synced Gmail emails & PDF documents</p>
+            </div>
+          </div>
+
+          {messages.length > 0 && (
+            <button
+              onClick={handleClearHistory}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 text-xs font-medium transition-all"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear History</span>
+            </button>
+          )}
+        </div>
+
+        {/* Chat Messages Area */}
+        <div className="flex-1 overflow-y-auto pr-2 space-y-4 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+          {fetchingHistory ? (
+            <div className="flex flex-col items-center justify-center h-full text-slate-400 space-y-3">
+              <RefreshCw className="w-8 h-8 animate-spin text-purple-400" />
+              <p className="text-sm">Loading chat history...</p>
+            </div>
+          ) : messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center max-w-lg mx-auto py-12">
+              <div className="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4 text-purple-400">
+                <Bot className="w-8 h-8" />
+              </div>
+              <h2 className="text-lg font-semibold text-white mb-2">How can I assist you today?</h2>
+              <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+                I have indexed your synced Gmail messages and PDF attachments into a vector database. Ask me anything to retrieve precise information with source citations.
+              </p>
+
+              {/* Suggested Questions */}
+              <div className="w-full space-y-2 text-left">
+                <p className="text-xs font-medium text-slate-400 mb-2 flex items-center gap-1.5">
+                  <HelpCircle className="w-3.5 h-3.5 text-purple-400" />
+                  Try asking one of these:
+                </p>
+                {SUGGESTED_QUESTIONS.map((q, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleSend(q)}
+                    className="w-full text-left p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.08] border border-white/10 text-xs text-slate-200 hover:text-white transition-all flex items-center justify-between group"
+                  >
+                    <span>{q}</span>
+                    <Sparkles className="w-3.5 h-3.5 text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            messages.map((msg) => (
+              <div key={msg.id} className="space-y-4">
+                {/* User Question */}
+                <div className="flex items-start justify-end space-x-3">
+                  <div className="max-w-xl rounded-2xl rounded-tr-none bg-gradient-to-r from-purple-600 to-indigo-600 p-4 text-white text-sm shadow-lg shadow-purple-600/10">
+                    <p className="leading-relaxed whitespace-pre-wrap">{msg.question}</p>
+                  </div>
+                  <div className="w-8 h-8 rounded-full bg-slate-700 border border-white/20 flex items-center justify-center text-slate-200 shrink-0">
+                    <User className="w-4 h-4" />
+                  </div>
+                </div>
+
+                {/* AI Answer */}
+                <div className="flex items-start space-x-3">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center text-white shrink-0 shadow-md shadow-purple-500/20">
+                    <Bot className="w-4.5 h-4.5" />
+                  </div>
+                  <div className="max-w-2xl flex-1 rounded-2xl rounded-tl-none bg-white/[0.05] border border-white/10 p-4.5 text-slate-200 text-sm shadow-xl space-y-3">
+                    {msg.answer === null ? (
+                      <div className="flex items-center space-x-2 text-purple-300">
+                        <Sparkles className="w-4 h-4 animate-spin" />
+                        <span className="text-xs font-medium animate-pulse">Searching documents & generating answer with Groq AI...</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="leading-relaxed whitespace-pre-wrap text-slate-100 font-sans">
+                          {msg.answer}
+                        </div>
+
+                        {/* Source Citations */}
+                        {msg.sources && msg.sources.length > 0 && (
+                          <div className="pt-3 border-t border-white/10">
+                            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                              <FileText className="w-3.5 h-3.5 text-purple-400" />
+                              Source Documents ({msg.sources.length})
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {msg.sources.map((src, sIdx) => (
+                                <div
+                                  key={sIdx}
+                                  className="flex items-center space-x-1.5 bg-purple-500/10 border border-purple-500/20 rounded-lg px-2.5 py-1 text-xs text-purple-300 font-medium"
+                                  title={`Relevance score: ${src.score}`}
+                                >
+                                  <FileText className="w-3.5 h-3.5 text-purple-400" />
+                                  <span>{src.filename}</span>
+                                  <span className="text-[10px] text-purple-400/70 font-mono">({Math.round(src.score * 100)}%)</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+          <div ref={chatEndRef} />
+        </div>
+
+        {/* Input Bar */}
+        <div className="mt-3 pt-3 border-t border-white/10">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSend();
+            }}
+            className="flex items-center space-x-2 bg-white/[0.05] border border-white/15 focus-within:border-purple-500/50 focus-within:ring-2 focus-within:ring-purple-500/20 rounded-2xl p-2 transition-all"
+          >
+            <input
+              type="text"
+              value={inputQuestion}
+              onChange={(e) => setInputQuestion(e.target.value)}
+              placeholder="Ask a question about your synced emails or documents..."
+              disabled={loading}
+              className="flex-1 bg-transparent text-sm text-white placeholder-slate-400 px-3 focus:outline-none disabled:opacity-50"
+            />
+            <button
+              type="submit"
+              disabled={!inputQuestion.trim() || loading}
+              className="p-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-purple-600/30 transition-all shrink-0"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
+          <p className="text-[11px] text-center text-slate-500 mt-2">
+            Answers are generated strictly from your synced Gmail messages & attachments using LLaMA 3.3.
+          </p>
+        </div>
+      </div>
+    </AppShell>
+  );
+}
