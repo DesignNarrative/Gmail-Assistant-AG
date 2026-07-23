@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react';
 import AppShell from '../components/layout/AppShell';
 import { useAuthStore } from '../store/authStore';
 import { getGreeting } from '../utils/helpers';
-import { Mail, Search, FileText, BarChart, ExternalLink, Bot, Clock, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
+import { Mail, Search, FileText, BarChart, ExternalLink, Bot, Clock, RefreshCw, AlertCircle, CheckCircle, Download } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { gmailApi, SyncStats, SyncLogEntry } from '../api/gmail';
 import { authApi } from '../api/auth';
+import client from '../api/client';
 
 export default function DashboardPage() {
   const { user, setUser } = useAuthStore();
@@ -116,6 +117,32 @@ export default function DashboardPage() {
     } catch (e: any) {
       setIsSyncing(false);
       setErrorMsg(e.response?.data?.detail || "Failed to start synchronization.");
+    }
+  };
+
+  const handleDownloadEmails = async () => {
+    try {
+      setErrorMsg(null);
+      setSuccessMsg(null);
+      const response = await client.get('/api/v1/gmail/export', {
+        responseType: 'blob',
+      });
+      
+      if (response.status === 204) {
+        setSuccessMsg("All synced emails have already been downloaded. No new emails to export!");
+        return;
+      }
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'new_emails.zip');
+      document.body.appendChild(link);
+      link.click();
+      setSuccessMsg("New emails downloaded successfully!");
+    } catch (e: any) {
+      console.error("Export failed:", e);
+      setErrorMsg("Failed to download email catalog.");
     }
   };
 
@@ -245,6 +272,17 @@ export default function DashboardPage() {
                   >
                     {isSyncing ? "Synchronizing Inbox..." : "Sync Labeled Emails"}
                   </Button>
+
+                  {!isSyncing && stats.total_emails > 0 && (
+                    <Button
+                      variant="secondary"
+                      leftIcon={<Download className="w-4 h-4" />}
+                      onClick={handleDownloadEmails}
+                    >
+                      Download New Emails (.docx)
+                    </Button>
+                  )}
+
                   {isSyncing && (
                     <span className="text-sm text-text-secondary animate-pulse flex items-center gap-2">
                       Please keep this window open while processing attachments...

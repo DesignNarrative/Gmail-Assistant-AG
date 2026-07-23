@@ -51,11 +51,11 @@ async def get_audit_logs(
         offset = (page - 1) * limit
         action_str = action if isinstance(action, str) and action.strip() else None
 
-        stmt = select(AuditLog)
+        stmt = select(AuditLog).where(AuditLog.user_id == current_user.id)
         if action_str:
             stmt = stmt.where(AuditLog.action.ilike(f"%{action_str.strip()}%"))
 
-        count_stmt = select(func.count(AuditLog.id))
+        count_stmt = select(func.count(AuditLog.id)).where(AuditLog.user_id == current_user.id)
         if action_str:
             count_stmt = count_stmt.where(AuditLog.action.ilike(f"%{action_str.strip()}%"))
         

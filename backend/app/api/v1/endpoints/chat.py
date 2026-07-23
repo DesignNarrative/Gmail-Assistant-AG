@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, desc
@@ -9,6 +10,7 @@ from app.models.chat_message import ChatMessage
 from app.services.ai.rag_service import generate_rag_answer
 from typing import List, Optional, Any
 import logging
+import io
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -91,3 +93,46 @@ async def clear_chat_history(
     except Exception as e:
         logger.error(f"Error clearing chat history: {e}")
         raise HTTPException(status_code=500, detail="Failed to clear chat history")
+
+
+@router.get("/export")
+async def export_chat_history(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        from datetime import datetime
+        stmt = (
+            select(ChatMessage)
+            .where(ChatMessage.user_id == current_user.id)
+            .order_by(desc(ChatMessage.created_at))
+        )
+        result = await db.execute(stmt)
+        messages = result.scalars().all()
+
+        output = io.StringIO()
+        output.write("==================================================\n")
+        output.write("   Abhinav Group AI Gmail Assistant Chat Export\n")
+        output.write(f"   Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        output.write(f"   User: {current_user.email}\n")
+        output.write("==================================================\n\n")
+
+        for msg in reversed(messages):  # chronological order
+            output.write(f"👤 Question: {msg.question}\n\n")
+            output.write(f"🤖 Answer:\n{msg.answer}\n\n")
+            if msg.sources:
+                output.write("Sources Cited:\n")
+                for s in msg.sources:
+                    output.write(f" - {s.get('filename')} (relevance: {s.get('score')})\n")
+            output.write("\n" + "-"*50 + "\n\n")
+
+        output.seek(0)
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode("utf-8")),
+            media_type="text/plain",
+            headers={"Content-Disposition": "attachment; filename=chat_history.txt"}
+        )
+    except Exception as e:
+        logger.error(f"Error exporting chat history: {e}")
+        raise HTTPException(status_code=500, detail="Failed to export chat history")
+

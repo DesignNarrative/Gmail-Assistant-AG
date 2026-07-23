@@ -79,23 +79,28 @@ async def run_generate_email_embeddings(email_id_str: str):
             # Delete old chunks for this email (in case of re-sync)
             await db.execute(delete(DocumentChunk).where(DocumentChunk.email_id == e_id))
 
-            # Fetch user_id from email record to assign it to chunk
-            stmt_email = select(Email.user_id).where(Email.id == e_id)
-            user_id = (await db.execute(stmt_email)).scalar()
+            # Fetch email record to assign user_id and mark as processed
+            stmt_email = select(Email).where(Email.id == e_id)
+            email_rec = (await db.execute(stmt_email)).scalars().first()
 
-            for idx, (chunk_str, emb_vector) in enumerate(zip(chunks, embeddings)):
-                formatted_chunk = f"{header_info}\n{chunk_str}" if not chunk_str.startswith("[EMAIL") else chunk_str
-                chunk_obj = DocumentChunk(
-                    email_id=e_id,
-                    user_id=user_id,
-                    chunk_text=formatted_chunk,
-                    chunk_index=idx,
-                    embedding=emb_vector
-                )
-                db.add(chunk_obj)
+            if email_rec:
+                user_id = email_rec.user_id
+                for idx, (chunk_str, emb_vector) in enumerate(zip(chunks, embeddings)):
+                    formatted_chunk = f"{header_info}\n{chunk_str}" if not chunk_str.startswith("[EMAIL") else chunk_str
+                    chunk_obj = DocumentChunk(
+                        email_id=e_id,
+                        user_id=user_id,
+                        chunk_text=formatted_chunk,
+                        chunk_index=idx,
+                        embedding=emb_vector
+                    )
+                    db.add(chunk_obj)
+
+                # Set email.is_processed to True so we don't re-embed it next time
+                email_rec.is_processed = True
 
             await db.commit()
-            logger.info(f"Saved {len(chunks)} email chunks for {email_id_str}")
+            logger.info(f"Saved {len(chunks)} email chunks and marked email as processed for {email_id_str}")
 
     except Exception as e:
         logger.error(f"Failed to generate email embeddings for {email_id_str}: {e}", exc_info=True)

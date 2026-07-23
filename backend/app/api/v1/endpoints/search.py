@@ -67,7 +67,7 @@ async def global_search(
         query_str = f"%{q_str.strip()}%" if q_str else None
 
         # 1. Search Emails
-        email_conditions = []
+        email_conditions = [Email.user_id == current_user.id]
         if query_str:
             email_conditions.append(or_(
                 Email.subject.ilike(query_str),
@@ -80,11 +80,7 @@ async def global_search(
         if isinstance(has_attachment, bool):
             email_conditions.append(Email.has_attachments == has_attachment)
 
-        email_stmt = select(Email)
-        if email_conditions:
-            email_stmt = email_stmt.where(and_(*email_conditions))
-        email_stmt = email_stmt.order_by(desc(Email.date_received)).limit(limit)
-
+        email_stmt = select(Email).where(and_(*email_conditions)).order_by(desc(Email.date_received)).limit(limit)
         email_rows = (await db.execute(email_stmt)).scalars().all()
 
         for e in email_rows:
@@ -100,7 +96,7 @@ async def global_search(
 
         # 2. Search Processed Documents
         if query_str or doc_type_str:
-            doc_conditions = []
+            doc_conditions = [Email.user_id == current_user.id]
             if query_str:
                 doc_conditions.append(or_(
                     ProcessedDocument.extracted_text.ilike(query_str),
@@ -112,10 +108,11 @@ async def global_search(
             doc_stmt = (
                 select(ProcessedDocument, Attachment)
                 .join(Attachment, Attachment.id == ProcessedDocument.attachment_id)
+                .join(Email, Email.id == Attachment.email_id)
+                .where(and_(*doc_conditions))
+                .order_by(desc(ProcessedDocument.created_at))
+                .limit(limit)
             )
-            if doc_conditions:
-                doc_stmt = doc_stmt.where(and_(*doc_conditions))
-            doc_stmt = doc_stmt.order_by(desc(ProcessedDocument.created_at)).limit(limit)
 
             doc_rows = (await db.execute(doc_stmt)).all()
 
@@ -163,23 +160,40 @@ async def get_analytics_summary(
 ):
     try:
         # 1. Total emails
-        total_emails = (await db.execute(select(func.count(Email.id)))).scalar() or 0
+        total_emails = (await db.execute(
+            select(func.count(Email.id)).where(Email.user_id == current_user.id)
+        )).scalar() or 0
 
         # 2. Total threads
-        total_threads = (await db.execute(select(func.count(func.distinct(Email.thread_id))))).scalar() or 0
+        total_threads = (await db.execute(
+            select(func.count(func.distinct(Email.thread_id))).where(Email.user_id == current_user.id)
+        )).scalar() or 0
 
         # 3. Total attachments
-        total_attachments = (await db.execute(select(func.count(Attachment.id)))).scalar() or 0
+        total_attachments = (await db.execute(
+            select(func.count(Attachment.id))
+            .join(Email, Email.id == Attachment.email_id)
+            .where(Email.user_id == current_user.id)
+        )).scalar() or 0
 
         # 4. Total processed documents
-        total_processed_docs = (await db.execute(select(func.count(ProcessedDocument.id)))).scalar() or 0
+        total_processed_docs = (await db.execute(
+            select(func.count(ProcessedDocument.id))
+            .join(Attachment, Attachment.id == ProcessedDocument.attachment_id)
+            .join(Email, Email.id == Attachment.email_id)
+            .where(Email.user_id == current_user.id)
+        )).scalar() or 0
 
         # 5. Total vector chunks
-        total_vector_chunks = (await db.execute(select(func.count(DocumentChunk.id)))).scalar() or 0
+        total_vector_chunks = (await db.execute(
+            select(func.count(DocumentChunk.id)).where(DocumentChunk.user_id == current_user.id)
+        )).scalar() or 0
 
         # 6. Breakdown by MIME type
         mime_rows = (await db.execute(
             select(Attachment.mime_type, func.count(Attachment.id))
+            .join(Email, Email.id == Attachment.email_id)
+            .where(Email.user_id == current_user.id)
             .group_by(Attachment.mime_type)
         )).all()
 

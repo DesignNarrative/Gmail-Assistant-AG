@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, update
 from app.core.database import get_db
@@ -12,6 +13,11 @@ from app.workers.sync_tasks import run_sync_gmail_label
 from pydantic import BaseModel, Field
 import uuid
 import logging
+import io
+import csv
+import docx
+import zipfile
+import re
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -139,3 +145,123 @@ async def update_gmail_label(
     except Exception as e:
         logger.error(f"Error updating Gmail sync label: {e}")
         raise HTTPException(status_code=500, detail="Failed to update sync label settings")
+
+
+@router.get("/export")
+async def export_synced_emails(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        from fastapi import Response
+        # Fetch only undownloaded emails for the user
+        stmt = select(Email).where(
+            Email.user_id == current_user.id,
+            Email.is_downloaded == False
+        ).order_by(desc(Email.date_sent))
+        result = await db.execute(stmt)
+        emails = result.scalars().all()
+
+        if not emails:
+            # Return 204 No Content if everything is already downloaded
+            return Response(status_code=204)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for idx, e in enumerate(emails):
+                doc = docx.Document()
+                
+                # Title Heading
+                h = doc.add_heading(e.subject or "(No Subject)", level=1)
+                h.keep_with_next = True
+                
+                # Metadata block
+                date_sent_str = e.date_sent.strftime("%Y-%m-%d %H:%M:%S") if e.date_sent else "(No Date)"
+                doc.add_paragraph(
+                    f"From: {e.sender_name or ''} <{e.sender_email}>\n"
+                    f"Date: {date_sent_str}\n"
+                    f"Thread ID: {e.thread_id}"
+                )
+                doc.add_paragraph("-" * 60)
+                
+                # Clean up raw email body formatting and zero-width spaces/junk characters
+                body_raw = e.body_text or "(No body content)"
+                body_clean = re.sub(r'[\u200b-\u200d\ufeff\u034f\u200e\u200f]', '', body_raw)
+                body_clean = re.sub(r'\n{3,}', '\n\n', body_clean)
+                body_clean = re.sub(r'[ \t]{2,}', ' ', body_clean).strip()
+                
+                # Write body text lines to document
+                for line in body_clean.split("\n"):
+                    doc.add_paragraph(line)
+                
+                # Save single docx file to memory
+                doc_buf = io.BytesIO()
+                doc.save(doc_buf)
+                docx_bytes = doc_buf.getvalue()
+                
+                # Derive safe file name
+                safe_subject = re.sub(r'[^\w\s-]', '', e.subject or "No_Subject")
+                safe_subject = re.sub(r'[-\s]+', '_', safe_subject).strip('_')
+                if not safe_subject:
+                    safe_subject = f"email_{idx}"
+                filename = f"{safe_subject[:60]}.docx"
+                
+                # Add file to ZIP archive
+                zip_file.writestr(filename, docx_bytes)
+                
+                # Mark as downloaded in DB
+                e.is_downloaded = True
+
+        await db.commit()
+        zip_buffer.seek(0)
+        
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": "attachment; filename=new_emails.zip"}
+        )
+    except Exception as e:
+        logger.error(f"Error exporting synced emails to zip: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to export synced emails")
+
+
+@router.get("/attachments/{attachment_id}/download")
+async def download_attachment(
+    attachment_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        att_uuid = uuid.UUID(attachment_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid attachment ID format")
+
+    try:
+        # Join Email to verify the attachment belongs to an email owned by current_user.id
+        stmt = (
+            select(Attachment, Email)
+            .join(Email, Email.id == Attachment.email_id)
+            .where(Attachment.id == att_uuid, Email.user_id == current_user.id)
+        )
+        row = (await db.execute(stmt)).first()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Attachment not found or access denied")
+
+        attachment, email = row
+
+        import os
+        if not os.path.exists(attachment.storage_path):
+            raise HTTPException(status_code=404, detail="Attachment file not found on disk")
+
+        return FileResponse(
+            path=attachment.storage_path,
+            filename=attachment.filename,
+            media_type=attachment.mime_type
+        )
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Error downloading attachment {attachment_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download attachment")
+

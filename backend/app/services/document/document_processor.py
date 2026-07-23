@@ -128,8 +128,61 @@ class DocumentProcessor:
     @staticmethod
     def _process_docx(file_path: str) -> str:
         import docx
-        doc = docx.Document(file_path)
-        return "\n".join(p.text for p in doc.paragraphs)
+        try:
+            doc = docx.Document(file_path)
+            return "\n".join(p.text for p in doc.paragraphs)
+        except Exception as docx_err:
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext == '.doc' or 'doc' in file_path:
+                logger.info(f"python-docx failed for legacy .doc file {file_path}. Trying binary extraction fallback...")
+                try:
+                    return DocumentProcessor._process_legacy_doc(file_path)
+                except Exception as legacy_err:
+                    logger.error(f"Legacy .doc extraction fallback failed: {legacy_err}")
+            raise docx_err
+
+    @staticmethod
+    def _process_legacy_doc(file_path: str) -> str:
+        import re
+        with open(file_path, "rb") as f:
+            data = f.read()
+            
+        # Extract UTF-16LE printable strings (since older .doc formats store text in UTF-16LE streams)
+        utf16_strings = []
+        pattern_utf16 = re.compile(rb'(?:[\x20-\x7E\x0A\x0D]\x00){4,}')
+        for match in pattern_utf16.finditer(data):
+            try:
+                s = match.group(0).decode("utf-16le").strip()
+                if s:
+                    utf16_strings.append(s)
+            except Exception:
+                pass
+                
+        # Extract ASCII printable strings
+        ascii_strings = []
+        pattern_ascii = re.compile(rb'[\x20-\x7E\x0A\x0D]{4,}')
+        for match in pattern_ascii.finditer(data):
+            try:
+                s = match.group(0).decode("ascii").strip()
+                if s:
+                    ascii_strings.append(s)
+            except Exception:
+                pass
+                
+        # Combine extracted strings
+        all_strings = utf16_strings + ascii_strings
+        unique_strings = []
+        seen = set()
+        
+        for s in all_strings:
+            s_clean = re.sub(r'\s+', ' ', s).strip()
+            if len(s_clean) > 8 and s_clean not in seen:
+                # Exclude strings that look purely like metadata/binary junk
+                if not re.match(r'^[_\W\d]+$', s_clean):
+                    unique_strings.append(s_clean)
+                    seen.add(s_clean)
+                    
+        return "\n\n".join(unique_strings)
 
     @staticmethod
     def _process_text(file_path: str) -> str:

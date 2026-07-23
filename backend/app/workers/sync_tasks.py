@@ -76,12 +76,12 @@ async def run_sync_gmail_label(user_id_str: str, sync_log_id_str: str):
                         # Run sequentially to keep CPU usage low on local laptop
                         await run_process_attachment(str(att.id))
 
-                # Also generate email embeddings directly in background
+                # Also generate email embeddings directly in background for UNPROCESSED emails
                 from app.models.email import Email
-                all_emails = (await db.execute(
-                    select(Email).where(Email.user_id == user.id)
+                unprocessed_emails = (await db.execute(
+                    select(Email).where(Email.user_id == user.id, Email.is_processed == False)
                 )).scalars().all()
-                for email in all_emails:
+                for email in unprocessed_emails:
                     from app.workers.embedding_tasks import run_generate_email_embeddings
                     logger.info(f"Triggering direct email embedding for email {email.id} ({email.subject})")
                     await run_generate_email_embeddings(str(email.id))
