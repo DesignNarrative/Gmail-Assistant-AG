@@ -114,7 +114,7 @@ export default function AiChatPage() {
               <h1 className="text-xl font-bold text-white flex items-center gap-2">
                 AI Intelligence Chat
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                  RAG Powered
+                  AI Powered
                 </span>
               </h1>
               <p className="text-xs text-slate-400">Ask any question grounded in your synced Gmail emails & PDF documents</p>

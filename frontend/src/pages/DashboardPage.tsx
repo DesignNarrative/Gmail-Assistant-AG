@@ -227,7 +227,7 @@ export default function DashboardPage() {
             icon={BarChart} 
             label="AI Memory Size" 
             value={stats.total_emails > 0 ? "Ready" : "Waiting for Sync"} 
-            trend="RAG grounding layer" 
+            trend="Powers your AI answers" 
             trendDown={stats.total_emails === 0}
           />
         </div>

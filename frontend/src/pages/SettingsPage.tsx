@@ -152,16 +152,16 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* AI & RAG Configuration */}
+        {/* AI Configuration */}
         <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5 space-y-4 shadow-xl">
           <h2 className="text-sm font-semibold text-white flex items-center gap-2 border-b border-white/10 pb-3">
             <Cpu className="w-4 h-4 text-purple-400" />
-            AI & Vector Engine Configuration
+            AI Configuration
           </h2>
 
           <div className="space-y-3 text-xs">
             <div className="flex justify-between items-center p-3 rounded-xl bg-dark-bg border border-white/10">
-              <span className="text-slate-400 font-medium">Embedding Model</span>
+              <span className="text-slate-400 font-medium">AI Search Model</span>
               <span className="text-purple-300 font-mono font-semibold">{status?.vector_search_engine}</span>
             </div>
 
