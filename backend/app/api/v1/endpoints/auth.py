@@ -4,15 +4,27 @@ from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, Refre
 from app.services.auth_service import register_user, authenticate_user, create_user_tokens, refresh_access_token, revoke_token
 from app.core.database import get_db
 from app.core.dependencies import get_current_active_user
+from app.core.config import get_settings
 from app.models.user import User
 
 router = APIRouter()
+settings = get_settings()
 
 @router.post("/register", response_model=UserResponse)
 async def register(request: Request, data: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    # Access control (Option A): only allow-listed emails may create an account.
+    # An empty allowlist means registration is fully closed (fail-safe default).
+    allowed = settings.allowed_registration_emails_list
+    if data.email.strip().lower() not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="Registration is restricted. This email is not authorized to create an account."
+        )
     try:
         user = await register_user(db, data)
         return user
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

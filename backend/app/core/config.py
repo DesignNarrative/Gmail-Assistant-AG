@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     MAX_ATTACHMENT_SIZE_MB: int = 100
     UPLOAD_DIR: str = "./uploads"
     RATE_LIMIT_PER_MINUTE: int = 60
+    # Access control (Option A): comma-separated allowlist of emails permitted to register.
+    # Empty string means registration is fully closed (fail-safe default).
+    ALLOWED_REGISTRATION_EMAILS: str = ""
     FIRST_DIRECTOR_EMAIL: str = ""
     FIRST_DIRECTOR_NAME: str = ""
     FIRST_DIRECTOR_PASSWORD: str = ""
@@ -32,6 +35,10 @@ class Settings(BaseSettings):
     @property
     def allowed_origins_list(self) -> list[str]:
         return [x.strip() for x in self.ALLOWED_ORIGINS.split(",") if x.strip()]
+
+    @property
+    def allowed_registration_emails_list(self) -> list[str]:
+        return [x.strip().lower() for x in self.ALLOWED_REGISTRATION_EMAILS.split(",") if x.strip()]
 
     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
 
