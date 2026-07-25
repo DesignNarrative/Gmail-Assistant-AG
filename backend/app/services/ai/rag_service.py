@@ -59,6 +59,103 @@ STRICT RULES:
 """
 
 
+GENERAL_KNOWLEDGE_PROMPT = """You are an elite AI Executive Intelligence Assistant for the Director of Abhinav Group.
+
+The director's question is general in nature, or could not be answered from the synced emails/documents. Answer using your own knowledge.
+
+OUTPUT FORMAT (FOLLOW STRICTLY):
+1. CLEAN STRUCTURE — Use ## headings and ### sub-headings. Never dump raw text.
+2. TABLES — Use Markdown tables for any comparison or multi-column data:
+   | Column A | Column B |
+   |----------|----------|
+   | value    | value    |
+   ⚠️ NEVER put | pipe characters inside a table cell value — use commas instead.
+3. CONCISE BUT COMPLETE — Include all key facts, numbers, and context.
+
+RULES:
+• Answer from your general knowledge. Do NOT fabricate email citations or source references.
+• If you are uncertain or lack specific data, say so honestly rather than guessing.
+• For legal, financial, tax, or HR matters, give general guidance and recommend consulting a qualified professional for the director's specific situation.
+• Professional executive tone throughout.
+"""
+
+# Minimum cosine-similarity score for a retrieved chunk to count as "relevant".
+# General-knowledge questions require a stronger match to be treated as email-grounded.
+RELEVANCE_THRESHOLD = 0.40
+GENERAL_QUESTION_RELEVANCE_THRESHOLD = 0.55
+
+GENERAL_QUESTION_KEYWORDS = [
+    "market salary", "salary for", "salary should", "salary range",
+    "industry standard", "industry average", "market rate", "market trend",
+    "legal definition", "what is the law", "according to law", "labour law",
+    "best practice", "how do i", "how should", "what should i", "what should we",
+    "recommend", "recommendation", "advise", "advice on",
+    "average", "benchmark", "typical", "commonly", "generally",
+    "explain what", "define ", "what is the difference",
+    "current market", "going rate", "standard rate",
+]
+
+
+def _is_general_question(q_lower: str) -> bool:
+    return any(kw in q_lower for kw in GENERAL_QUESTION_KEYWORDS)
+
+
+# Phrases the email-grounded LLM uses when the synced emails/documents do NOT
+# contain the answer. When one of these appears (in hybrid mode) we fall back to
+# a general-knowledge answer. This is more reliable than the cosine threshold
+# alone, because loosely-related emails can still score above the threshold.
+INSUFFICIENT_ANSWER_MARKERS = [
+    "not mentioned in available emails",
+    "not mentioned in the available emails",
+    "not mentioned",
+    "no mention of",
+    "do not mention",
+    "does not mention",
+    "do not provide",
+    "does not provide",
+    "do not provide any",
+    "does not provide any",
+    "none of these emails",
+    "none of the emails",
+    "do not specify",
+    "does not specify",
+    "not specified in",
+    "no information about",
+    "no information on",
+    "no relevant information",
+    "do not contain",
+    "does not contain",
+    "not provided in the",
+    "could not find",
+    "unable to find",
+    "not available in the emails",
+    "not found in the available",
+]
+
+
+def _answer_is_insufficient(answer: str) -> bool:
+    if not answer:
+        return True
+    a_lower = answer.lower()
+    return any(marker in a_lower for marker in INSUFFICIENT_ANSWER_MARKERS)
+
+
+def _call_groq(system_prompt: str, user_message: str, temperature: float = 0.1):
+    """Call Groq synchronously and return (answer, model_used)."""
+    from groq import Groq
+    client = Groq(api_key=settings.GROQ_API_KEY)
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ],
+        temperature=temperature,
+        max_tokens=3000
+    )
+    return response.choices[0].message.content.strip(), GROQ_MODEL
+
+
 async def retrieve_relevant_chunks(
     question: str,
     db: AsyncSession,
@@ -147,15 +244,21 @@ async def fetch_full_email_catalog(db: AsyncSession, user_id: UUID) -> str:
 async def generate_rag_answer(
     question: str,
     db: AsyncSession,
-    user_id: str
+    user_id: str,
+    mode: str = "hybrid"
 ) -> Dict[str, Any]:
     """
-    Full RAG pipeline: vector similarity search + full email catalog injection + Groq LLaMA 3.3 70B.
+    RAG pipeline with hybrid knowledge mode.
+
+    mode: "hybrid"     — email-grounded answers when relevant context exists; otherwise
+                          the LLM answers from its own general knowledge (clearly flagged).
+          "email_only" — strict: only answer from synced emails; say "Not mentioned"
+                         when nothing relevant is found.
+    Returns a dict including 'source_type': email_grounded | general_knowledge | no_emails.
     """
-    from groq import Groq
     u_uuid = UUID(user_id)
 
-    # Check how many vector chunks exist for this specific user
+    # Count vector chunks for this user
     count_result = await db.execute(
         text("SELECT COUNT(*) FROM document_chunks WHERE embedding IS NOT NULL AND user_id = :user_id"),
         {"user_id": u_uuid}
@@ -170,23 +273,52 @@ async def generate_rag_answer(
         "what email", "recent email", "inbox", "tell me about", "what do",
         "everything", "all the", "show me"
     ])
+    is_general_question = _is_general_question(q_lower)
 
-    context_parts = []
-    used_chunks = []
+    # Retrieve chunks (if any exist) to assess relevance
+    chunks: List[Dict[str, Any]] = []
+    top_score = 0.0
+    if chunk_count > 0:
+        chunks = await retrieve_relevant_chunks(question, db, u_uuid)
+        if chunks:
+            top_score = chunks[0]["similarity_score"]
+
+    # General questions require a stronger match to count as email-grounded
+    threshold = GENERAL_QUESTION_RELEVANCE_THRESHOLD if is_general_question else RELEVANCE_THRESHOLD
+    has_relevant_context = top_score >= threshold and len(chunks) > 0
+
+    context_parts: List[str] = []
+    used_chunks: List[Dict[str, Any]] = []
     answer = ""
     model_used = None
+    source_type = "email_grounded"
 
     try:
-        # Always inject full email catalog for broad queries OR when chunks are low
-        if is_broad_query or chunk_count < 5:
-            email_catalog = await fetch_full_email_catalog(db, u_uuid)
-            context_parts.append(email_catalog)
+        if chunk_count == 0 and not (mode == "hybrid" and is_general_question):
+            # No emails synced and not a general-knowledge question -> prompt to sync
+            source_type = "no_emails"
+            answer = (
+                "⚠️ **No emails or documents have been synced yet.**\n\n"
+                "Please go to the **Dashboard** and click **'Sync Labeled Emails'** to import your Gmail data from the "
+                "'Director's AI Assistant' label. Once synced, I can answer any question based on those emails and attachments."
+            )
+            model_used = None
+        elif mode == "hybrid" and not has_relevant_context:
+            # Hybrid mode: no relevant email context -> answer from the LLM's general
+            # knowledge, clearly flagged (no email citations).
+            source_type = "general_knowledge"
+            answer, model_used = _call_groq(GENERAL_KNOWLEDGE_PROMPT, question, temperature=0.3)
+        else:
+            # Email-grounded strict RAG (email_only mode, or hybrid with relevant context)
+            source_type = "email_grounded"
 
-        # Add vector-retrieved chunks (most relevant content)
-        if chunk_count > 0:
-            chunks = await retrieve_relevant_chunks(question, db, u_uuid)
+            # Inject full email catalog for broad queries OR when chunks are low
+            if is_broad_query or chunk_count < 5:
+                email_catalog = await fetch_full_email_catalog(db, u_uuid)
+                context_parts.append(email_catalog)
+
+            # Add vector-retrieved chunks (most relevant content)
             total_chars = sum(len(cp) for cp in context_parts)
-
             for chunk in chunks:
                 if total_chars + len(chunk["chunk_text"]) > MAX_CONTEXT_CHARS:
                     break
@@ -197,18 +329,14 @@ async def generate_rag_answer(
                 total_chars += len(chunk["chunk_text"])
                 used_chunks.append(chunk)
 
-        if not context_parts:
-            # No data at all — tell the user to sync
-            answer = (
-                "⚠️ **No emails or documents have been synced yet.**\n\n"
-                "Please go to the **Dashboard** and click **'Sync Labeled Emails'** to import your Gmail data from the "
-                "'Director's AI Assistant' label. Once synced, I can answer any question based on those emails and attachments."
-            )
-            model_used = None
-        else:
-            context_text = "\n\n---\n\n".join(context_parts)
+            if not context_parts:
+                # Edge case: chunks existed but nothing gathered
+                answer = "Not mentioned in available emails."
+                model_used = None
+            else:
+                context_text = "\n\n---\n\n".join(context_parts)
 
-            user_message = f"""CONTEXT — Director's synced Gmail emails and documents:
+                user_message = f"""CONTEXT — Director's synced Gmail emails and documents:
 
 {context_text}
 
@@ -223,41 +351,42 @@ INSTRUCTIONS:
 - Cite each email/document ONCE per section using: > 📧 "Subject" — From: Name — Date
 - Do not repeat the same citation on every bullet point.
 - Be concise and professional. Give expert analysis, not just a summary."""
+                answer, model_used = _call_groq(SYSTEM_PROMPT, user_message, temperature=0.1)
 
-            client = Groq(api_key=settings.GROQ_API_KEY)
-            response = client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.1,
-                max_tokens=3000
-            )
-            answer = response.choices[0].message.content.strip()
-            model_used = GROQ_MODEL
+        # Hybrid fallback: if the email-grounded answer admits it couldn't find
+        # the information in the synced data, answer from general knowledge instead
+        # (clearly flagged). email_only mode keeps the "not mentioned" answer.
+        if mode == "hybrid" and source_type == "email_grounded" and _answer_is_insufficient(answer):
+            logger.info("Email-grounded answer insufficient -> falling back to general knowledge")
+            source_type = "general_knowledge"
+            answer, model_used = _call_groq(GENERAL_KNOWLEDGE_PROMPT, question, temperature=0.3)
+            used_chunks = []
 
     except Exception as e:
         logger.error(f"RAG pipeline error: {e}", exc_info=True)
         answer = f"⚠️ **AI Service Error**: {str(e)}\n\nPlease check your Groq API key or try again shortly."
         model_used = None
+        source_type = "email_grounded"
 
-    # Save chat message to history
-    sources = [
-        {
-            "filename": c["filename"],
-            "chunk_text": c["chunk_text"][:300],
-            "score": round(c["similarity_score"], 3)
-        }
-        for c in used_chunks
-    ]
+    # Build source citations (only meaningful for email-grounded answers)
+    sources: List[Dict[str, Any]] = []
+    if source_type == "email_grounded" and used_chunks:
+        sources = [
+            {
+                "filename": c["filename"],
+                "chunk_text": c["chunk_text"][:300],
+                "score": round(c["similarity_score"], 3)
+            }
+            for c in used_chunks
+        ]
 
     chat_msg = ChatMessage(
         user_id=u_uuid,
         question=question,
         answer=answer,
         sources=sources,
-        model_used=model_used
+        model_used=model_used,
+        source_type=source_type
     )
     db.add(chat_msg)
     await db.commit()
@@ -269,5 +398,6 @@ INSTRUCTIONS:
         "answer": answer,
         "sources": sources,
         "model_used": model_used,
+        "source_type": source_type,
         "created_at": chat_msg.created_at.isoformat()
     }

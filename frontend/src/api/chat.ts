@@ -6,18 +6,27 @@ export interface SourceCitation {
   score: number;
 }
 
+export type ChatMode = 'hybrid' | 'email_only';
+
+// Where an answer's content came from:
+//   email_grounded    -> facts from the user's synced emails/documents (cited)
+//   general_knowledge -> the LLM's own general knowledge (NOT from the emails)
+//   no_emails         -> nothing synced yet
+export type SourceType = 'email_grounded' | 'general_knowledge' | 'no_emails';
+
 export interface ChatMessage {
   id: string;
   question: string;
   answer: string | null;
   sources: SourceCitation[];
   model_used: string | null;
+  source_type?: SourceType | null;
   created_at: string;
 }
 
 export const chatApi = {
-  ask: async (question: string): Promise<ChatMessage> => {
-    const response = await client.post<ChatMessage>('/api/v1/chat/ask', { question });
+  ask: async (question: string, mode: ChatMode = 'hybrid'): Promise<ChatMessage> => {
+    const response = await client.post<ChatMessage>('/api/v1/chat/ask', { question, mode });
     return response.data;
   },
 

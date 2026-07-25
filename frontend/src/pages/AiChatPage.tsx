@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AppShell from '../components/layout/AppShell';
-import { chatApi, ChatMessage } from '../api/chat';
+import { chatApi, ChatMessage, ChatMode } from '../api/chat';
 import { 
   Send, Bot, User, Sparkles, Trash2, FileText, 
-  HelpCircle, RefreshCw, CheckCircle2, AlertCircle, ExternalLink 
+  HelpCircle, RefreshCw, CheckCircle2, AlertCircle, ExternalLink, BookOpen, ShieldCheck 
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -21,6 +21,7 @@ export default function AiChatPage() {
   const [loading, setLoading] = useState(false);
   const [fetchingHistory, setFetchingHistory] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<ChatMode>('hybrid');
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -70,7 +71,7 @@ export default function AiChatPage() {
     setMessages((prev) => [...prev, tempUserMsg]);
 
     try {
-      const res = await chatApi.ask(q);
+      const res = await chatApi.ask(q, mode);
       setMessages((prev) => 
         prev.map((msg) => (msg.id === tempUserMsg.id ? res : msg))
       );
@@ -120,15 +121,47 @@ export default function AiChatPage() {
             </div>
           </div>
 
-          {messages.length > 0 && (
-            <button
-              onClick={handleClearHistory}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 text-xs font-medium transition-all"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear History</span>
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {/* Knowledge mode toggle */}
+            <div className="flex items-center rounded-lg bg-white/[0.04] border border-white/10 p-0.5 text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setMode('hybrid')}
+                title="Answer from your emails, and fall back to the AI's general knowledge when your emails don't cover it (clearly labelled)."
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-all ${
+                  mode === 'hybrid'
+                    ? 'bg-purple-500/20 text-purple-200 border border-purple-500/30'
+                    : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Email + AI knowledge</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('email_only')}
+                title="Strict mode: answer only from your synced emails. If the answer isn't there, the assistant says so instead of guessing."
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-all ${
+                  mode === 'email_only'
+                    ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/30'
+                    : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Email-only</span>
+              </button>
+            </div>
+
+            {messages.length > 0 && (
+              <button
+                onClick={handleClearHistory}
+                className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 text-xs font-medium transition-all"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear History</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Chat Messages Area */}
@@ -192,6 +225,20 @@ export default function AiChatPage() {
                       </div>
                     ) : (
                       <>
+                        {/* Knowledge-source badge */}
+                        {msg.source_type === 'general_knowledge' && (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] font-medium w-fit">
+                            <BookOpen className="w-3.5 h-3.5" />
+                            <span>General knowledge — not from your emails</span>
+                          </div>
+                        )}
+                        {msg.source_type === 'email_grounded' && (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium w-fit">
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            <span>Grounded in your emails</span>
+                          </div>
+                        )}
+
                         <div className="prose prose-invert prose-sm max-w-none prose-p:my-1.5 prose-p:first:mt-0 prose-p:last:mb-0 prose-headings:mb-2 prose-headings:mt-3 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-code:before:content-none prose-code:after:content-none prose-pre:bg-black/40 prose-pre:border prose-pre:border-white/10">
                           <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
@@ -265,7 +312,9 @@ export default function AiChatPage() {
             </button>
           </form>
           <p className="text-[11px] text-center text-slate-500 mt-2">
-            Answers are generated strictly from your synced Gmail messages & attachments using LLaMA 3.3.
+            {mode === 'email_only'
+              ? 'Email-only mode: answers come strictly from your synced Gmail messages & attachments (LLaMA 3.3).'
+              : 'Hybrid mode: answers use your synced emails first, falling back to general AI knowledge (labelled) when needed.'}
           </p>
         </div>
       </div>

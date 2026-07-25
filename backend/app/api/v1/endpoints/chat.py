@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 class AskQuestionRequest(BaseModel):
     question: str = Field(..., min_length=2, max_length=1000, description="The natural language question to ask the AI")
+    mode: str = Field(default="hybrid", description="hybrid = email-grounded + general-knowledge fallback; email_only = strict")
 
 class SourceCitation(BaseModel):
     filename: str
@@ -29,6 +30,7 @@ class ChatMessageResponse(BaseModel):
     answer: Optional[str]
     sources: List[Any]
     model_used: Optional[str]
+    source_type: Optional[str] = None
     created_at: str
 
 @router.post("/ask", response_model=ChatMessageResponse)
@@ -39,10 +41,12 @@ async def ask_question(
 ):
     try:
         logger.info(f"User {current_user.email} asked: '{req.question}'")
+        mode = req.mode if req.mode in ("hybrid", "email_only") else "hybrid"
         result = await generate_rag_answer(
             question=req.question.strip(),
             db=db,
-            user_id=str(current_user.id)
+            user_id=str(current_user.id),
+            mode=mode
         )
         return result
     except Exception as e:
@@ -73,6 +77,7 @@ async def get_chat_history(
                 "answer": msg.answer,
                 "sources": msg.sources or [],
                 "model_used": msg.model_used,
+                "source_type": msg.source_type,
                 "created_at": msg.created_at.isoformat()
             })
         return output

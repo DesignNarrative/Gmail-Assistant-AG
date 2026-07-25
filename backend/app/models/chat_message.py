@@ -12,5 +12,6 @@ class ChatMessage(Base):
     answer = Column(Text, nullable=True)
     sources = Column(JSONB, default=[])  # list of {filename, chunk_text, score}
     model_used = Column(String, nullable=True)
+    source_type = Column(String, default='email_grounded', nullable=False)  # email_grounded | general_knowledge | no_emails
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
