@@ -7,12 +7,52 @@ from app.core.dependencies import get_current_active_user
 from app.models.user import User
 from app.models.audit_log import AuditLog
 from app.core.config import get_settings
+from app.workers.celery_app import celery_app
 from typing import List, Optional, Dict, Any
+from redis import asyncio as aioredis
+import asyncio
 import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+async def _check_redis_status() -> str:
+    """Ping Redis; returns 'operational' or 'error' (never raises)."""
+    client = None
+    try:
+        # On Windows, 'localhost' resolves to IPv6 (::1) first and redis.asyncio stalls
+        # ~2s before falling back to IPv4, where Redis actually listens. Force IPv4 so the
+        # status ping is fast and doesn't falsely time out. (Sync redis/Celery are unaffected.)
+        ping_url = settings.REDIS_URL.replace("//localhost:", "//127.0.0.1:")
+        client = aioredis.from_url(
+            ping_url, socket_connect_timeout=2, socket_timeout=2
+        )
+        pong = await client.ping()
+        return "operational" if pong else "error"
+    except Exception as e:
+        logger.warning(f"Redis status check failed: {e}")
+        return "error"
+    finally:
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+
+def _check_celery_status() -> str:
+    """Ping Celery workers via the broker. Blocking, so call via asyncio.to_thread.
+    In single-process mode no worker runs, so this correctly reports 'stopped'."""
+    try:
+        replies = celery_app.control.ping(timeout=1.0)
+        if replies:
+            return f"operational ({len(replies)} worker(s))"
+        return "stopped (single-process mode)"
+    except Exception as e:
+        logger.warning(f"Celery worker check failed: {e}")
+        return "unreachable"
 
 class AuditLogResponseItem(BaseModel):
     id: str
@@ -100,10 +140,14 @@ async def get_system_status(
         except Exception:
             db_status = "error"
 
+        # Real Redis + Celery worker checks (no longer hardcoded).
+        redis_status = await _check_redis_status()
+        celery_status = await asyncio.to_thread(_check_celery_status)
+
         return SystemStatusResponse(
             database_status=db_status,
-            redis_status="operational",
-            celery_worker_status="operational",
+            redis_status=redis_status,
+            celery_worker_status=celery_status,
             vector_search_engine="pgvector (384-dim BAAI/bge-small-en-v1.5)",
             llm_model=settings.GROQ_MODEL,
             active_label=current_user.gmail_label or settings.GMAIL_LABEL or "Director's AI Assistant",
