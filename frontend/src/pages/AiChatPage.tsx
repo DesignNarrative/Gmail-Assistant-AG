@@ -5,6 +5,8 @@ import {
   Send, Bot, User, Sparkles, Trash2, FileText, 
   HelpCircle, RefreshCw, CheckCircle2, AlertCircle, ExternalLink 
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const SUGGESTED_QUESTIONS = [
   "What is the student name and fee amount in the receipt?",
@@ -190,8 +192,19 @@ export default function AiChatPage() {
                       </div>
                     ) : (
                       <>
-                        <div className="leading-relaxed whitespace-pre-wrap text-slate-100 font-sans">
-                          {msg.answer}
+                        <div className="prose prose-invert prose-sm max-w-none prose-p:my-1.5 prose-p:first:mt-0 prose-p:last:mb-0 prose-headings:mb-2 prose-headings:mt-3 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-code:before:content-none prose-code:after:content-none prose-pre:bg-black/40 prose-pre:border prose-pre:border-white/10">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              a: ({ href, children, ...rest }: any) => (
+                                <a href={href} target="_blank" rel="noopener noreferrer" {...rest}>
+                                  {children}
+                                </a>
+                              ),
+                            }}
+                          >
+                            {msg.answer || ''}
+                          </ReactMarkdown>
                         </div>
 
                         {/* Source Citations */}
