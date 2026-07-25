@@ -64,7 +64,7 @@ export default function AiChatPage() {
       question: q,
       answer: null, // thinking
       sources: [],
-      model_used: 'llama-3.3-70b-versatile',
+      model_used: null, // filled in from the real response; don't fake a model
       created_at: new Date().toISOString()
     };
 
@@ -262,17 +262,34 @@ export default function AiChatPage() {
                               Source Documents ({msg.sources.length})
                             </p>
                             <div className="flex flex-wrap gap-2">
-                              {msg.sources.map((src, sIdx) => (
-                                <div
-                                  key={sIdx}
-                                  className="flex items-center space-x-1.5 bg-purple-500/10 border border-purple-500/20 rounded-lg px-2.5 py-1 text-xs text-purple-300 font-medium"
-                                  title={`Relevance score: ${src.score}`}
-                                >
-                                  <FileText className="w-3.5 h-3.5 text-purple-400" />
-                                  <span>{src.filename}</span>
-                                  <span className="text-[10px] text-purple-400/70 font-mono">({Math.round(src.score * 100)}%)</span>
-                                </div>
-                              ))}
+                              {msg.sources.map((src, sIdx) => {
+                                const dateStr = src.date
+                                  ? new Date(src.date).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })
+                                  : null;
+                                const subtitle = [src.sender, dateStr].filter(Boolean).join('  ·  ');
+                                const tooltip = [
+                                  src.subject ? `Subject: ${src.subject}` : null,
+                                  src.sender ? `From: ${src.sender}${src.sender_email && src.sender_email !== src.sender ? ` <${src.sender_email}>` : ''}` : null,
+                                  dateStr ? `Date: ${dateStr}` : null,
+                                  `Relevance: ${Math.round(src.score * 100)}%`,
+                                ].filter(Boolean).join('\n');
+                                return (
+                                  <div
+                                    key={sIdx}
+                                    className="flex flex-col gap-0.5 bg-purple-500/10 border border-purple-500/20 rounded-lg px-2.5 py-1.5 text-xs text-purple-300 max-w-[260px]"
+                                    title={tooltip}
+                                  >
+                                    <div className="flex items-center gap-1.5 font-medium">
+                                      <FileText className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                      <span className="truncate">{src.filename}</span>
+                                      <span className="text-[10px] text-purple-400/70 font-mono shrink-0">({Math.round(src.score * 100)}%)</span>
+                                    </div>
+                                    {subtitle && (
+                                      <span className="text-[10px] text-purple-400/60 truncate pl-5">{subtitle}</span>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         )}

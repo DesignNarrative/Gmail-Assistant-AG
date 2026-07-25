@@ -4,6 +4,11 @@ export interface SourceCitation {
   filename: string;
   chunk_text: string;
   score: number;
+  // Email metadata (optional; absent for older history rows or non-email chunks)
+  subject?: string | null;
+  sender?: string | null;
+  sender_email?: string | null;
+  date?: string | null;
 }
 
 export type ChatMode = 'hybrid' | 'email_only';

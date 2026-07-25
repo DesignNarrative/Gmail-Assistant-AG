@@ -180,6 +180,10 @@ async def retrieve_relevant_chunks(
             dc.email_id,
             dc.processed_doc_id,
             COALESCE(a.filename, e.subject, 'Email Content') AS filename,
+            e.subject AS email_subject,
+            e.sender_name AS sender_name,
+            e.sender_email AS sender_email,
+            e.date_sent AS date_sent,
             1 - (dc.embedding <=> CAST(:query_vec AS vector)) AS similarity_score
         FROM document_chunks dc
         LEFT JOIN attachments a ON a.id = dc.attachment_id
@@ -201,6 +205,10 @@ async def retrieve_relevant_chunks(
             "email_id": str(row.email_id) if row.email_id else None,
             "processed_doc_id": str(row.processed_doc_id) if row.processed_doc_id else None,
             "filename": row.filename,
+            "subject": row.email_subject,
+            "sender_name": row.sender_name,
+            "sender_email": row.sender_email,
+            "date_sent": row.date_sent.isoformat() if row.date_sent else None,
             "similarity_score": float(row.similarity_score)
         })
 
@@ -384,7 +392,12 @@ INSTRUCTIONS:
             {
                 "filename": c["filename"],
                 "chunk_text": c["chunk_text"][:300],
-                "score": round(c["similarity_score"], 3)
+                "score": round(c["similarity_score"], 3),
+                # Email metadata for richer citations (may be None for non-email chunks)
+                "subject": c.get("subject"),
+                "sender": c.get("sender_name") or c.get("sender_email"),
+                "sender_email": c.get("sender_email"),
+                "date": c.get("date_sent"),
             }
             for c in used_chunks
         ]

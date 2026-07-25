@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     GMAIL_LABEL: str = "Director's AI Assistant"
-    ALLOWED_ORIGINS: str = "http://localhost:3000"
+    ALLOWED_ORIGINS: str = "http://localhost:8000"
     MAX_ATTACHMENT_SIZE_MB: int = 100
     UPLOAD_DIR: str = "./uploads"
     RATE_LIMIT_PER_MINUTE: int = 60
