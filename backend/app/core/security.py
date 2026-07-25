@@ -73,20 +73,28 @@ def decrypt_value(encrypted_val: str) -> str:
     except Exception:
         return ""
 
-def create_state_token(user_id: str) -> str:
-    # Set expiration to 15 minutes
+def create_state_token(user_id: str, frontend_origin: str = "") -> str:
+    # Set expiration to 15 minutes. `fOrigin` carries the frontend origin so the
+    # OAuth callback knows where to send the browser back to (Google round-trips
+    # the `state` parameter unchanged).
     expire = datetime.now(timezone.utc) + timedelta(minutes=15)
     return jwt.encode(
-        {"sub": user_id, "type": "oauth_state", "exp": expire},
+        {"sub": user_id, "type": "oauth_state", "fOrigin": frontend_origin, "exp": expire},
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM
     )
 
-def decode_state_token(token: str) -> str | None:
+def decode_state_token(token: str) -> dict | None:
+    """
+    Returns {'user_id': <str>, 'frontend_origin': <str>} or None.
+    """
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         if payload.get("type") == "oauth_state":
-            return payload.get("sub")
+            return {
+                "user_id": payload.get("sub"),
+                "frontend_origin": payload.get("fOrigin") or "",
+            }
     except Exception:
         return None
     return None
