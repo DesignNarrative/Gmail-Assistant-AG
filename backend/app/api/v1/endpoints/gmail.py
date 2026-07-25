@@ -149,16 +149,18 @@ async def update_gmail_label(
 
 @router.get("/export")
 async def export_synced_emails(
+    download_all: bool = False,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
     try:
         from fastapi import Response
-        # Fetch only undownloaded emails for the user
-        stmt = select(Email).where(
-            Email.user_id == current_user.id,
-            Email.is_downloaded == False
-        ).order_by(desc(Email.date_sent))
+        # By default ("Download New") export only emails not yet downloaded.
+        # When download_all=true ("Download All") export every synced email regardless of flag.
+        conditions = [Email.user_id == current_user.id]
+        if not download_all:
+            conditions.append(Email.is_downloaded == False)
+        stmt = select(Email).where(*conditions).order_by(desc(Email.date_sent))
         result = await db.execute(stmt)
         emails = result.scalars().all()
 
@@ -214,11 +216,12 @@ async def export_synced_emails(
 
         await db.commit()
         zip_buffer.seek(0)
-        
+
+        zip_name = "all_emails.zip" if download_all else "new_emails.zip"
         return StreamingResponse(
             zip_buffer,
             media_type="application/zip",
-            headers={"Content-Disposition": "attachment; filename=new_emails.zip"}
+            headers={"Content-Disposition": f"attachment; filename={zip_name}"}
         )
     except Exception as e:
         logger.error(f"Error exporting synced emails to zip: {e}", exc_info=True)

@@ -120,26 +120,29 @@ export default function DashboardPage() {
     }
   };
 
-  const handleDownloadEmails = async () => {
+  const handleDownloadEmails = async (downloadAll: boolean = false) => {
     try {
       setErrorMsg(null);
       setSuccessMsg(null);
       const response = await client.get('/api/v1/gmail/export', {
         responseType: 'blob',
+        params: downloadAll ? { download_all: true } : {},
       });
       
       if (response.status === 204) {
-        setSuccessMsg("All synced emails have already been downloaded. No new emails to export!");
+        setSuccessMsg(downloadAll
+          ? "No synced emails to export yet. Run a sync first."
+          : "All synced emails have already been downloaded. No new emails to export!");
         return;
       }
       
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', 'new_emails.zip');
+      link.setAttribute('download', downloadAll ? 'all_emails.zip' : 'new_emails.zip');
       document.body.appendChild(link);
       link.click();
-      setSuccessMsg("New emails downloaded successfully!");
+      setSuccessMsg(downloadAll ? "All emails downloaded successfully!" : "New emails downloaded successfully!");
     } catch (e: any) {
       console.error("Export failed:", e);
       setErrorMsg("Failed to download email catalog.");
@@ -274,13 +277,22 @@ export default function DashboardPage() {
                   </Button>
 
                   {!isSyncing && stats.total_emails > 0 && (
-                    <Button
-                      variant="secondary"
-                      leftIcon={<Download className="w-4 h-4" />}
-                      onClick={handleDownloadEmails}
-                    >
-                      Download New Emails (.docx)
-                    </Button>
+                    <>
+                      <Button
+                        variant="secondary"
+                        leftIcon={<Download className="w-4 h-4" />}
+                        onClick={() => handleDownloadEmails(false)}
+                      >
+                        Download New Emails (.docx)
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        leftIcon={<Download className="w-4 h-4" />}
+                        onClick={() => handleDownloadEmails(true)}
+                      >
+                        Download All Emails (.docx)
+                      </Button>
+                    </>
                   )}
 
                   {isSyncing && (
