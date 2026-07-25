@@ -1,8 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import LoginForm from '../components/auth/LoginForm';
+import RegisterForm from '../components/auth/RegisterForm';
 import { Search, Bot, ShieldCheck } from 'lucide-react';
 
 export default function LoginPage() {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const isLogin = mode === 'login';
+
   return (
     <div className="min-h-screen w-full flex bg-dark-bg animated-bg">
       {/* Left Panel */}
@@ -52,11 +56,33 @@ export default function LoginPage() {
           </div>
           
           <div className="text-center mb-8">
-            <h2 className="text-2xl font-bold text-white mb-2">Welcome back</h2>
-            <p className="text-text-secondary text-sm">Sign in to AI Intelligence Assistant</p>
+            <h2 className="text-2xl font-bold text-white mb-2">
+              {isLogin ? 'Welcome back' : 'Create your account'}
+            </h2>
+            <p className="text-text-secondary text-sm">
+              {isLogin ? 'Sign in to AI Intelligence Assistant' : 'Join AI Intelligence Assistant'}
+            </p>
           </div>
           
-          <LoginForm />
+          {isLogin ? <LoginForm /> : <RegisterForm />}
+
+          <div className="mt-6 text-center text-sm">
+            {isLogin ? (
+              <span className="text-text-secondary">
+                Don't have an account?{' '}
+                <button type="button" onClick={() => setMode('register')} className="text-primary-blue hover:text-secondary-blue transition-colors font-medium">
+                  Sign up
+                </button>
+              </span>
+            ) : (
+              <span className="text-text-secondary">
+                Already have an account?{' '}
+                <button type="button" onClick={() => setMode('login')} className="text-primary-blue hover:text-secondary-blue transition-colors font-medium">
+                  Sign in
+                </button>
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>

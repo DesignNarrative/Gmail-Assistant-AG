@@ -1,5 +1,5 @@
 import client from './client';
-import { LoginCredentials, TokenResponse, User } from '../types/auth';
+import { LoginCredentials, RegisterCredentials, TokenResponse, User } from '../types/auth';
 
 export const authApi = {
   login: async (credentials: LoginCredentials): Promise<TokenResponse> => {
@@ -7,6 +7,11 @@ export const authApi = {
     return response.data;
   },
   
+  register: async (credentials: RegisterCredentials): Promise<User> => {
+    const response = await client.post<User>('/api/v1/auth/register', credentials);
+    return response.data;
+  },
+
   getMe: async (): Promise<User> => {
     const response = await client.get<User>('/api/v1/auth/me');
     return response.data;
