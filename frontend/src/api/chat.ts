@@ -12,7 +12,8 @@ export type ChatMode = 'hybrid' | 'email_only';
 //   email_grounded    -> facts from the user's synced emails/documents (cited)
 //   general_knowledge -> the LLM's own general knowledge (NOT from the emails)
 //   no_emails         -> nothing synced yet
-export type SourceType = 'email_grounded' | 'general_knowledge' | 'no_emails';
+//   error             -> the AI call failed (e.g. rate limit); not persisted to history
+export type SourceType = 'email_grounded' | 'general_knowledge' | 'no_emails' | 'error';
 
 export interface ChatMessage {
   id: string;

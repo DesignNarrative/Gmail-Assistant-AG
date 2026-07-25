@@ -16,12 +16,10 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_default_queue="default",
-    beat_schedule={
-        "auto-sync-gmail-every-10-min": {
-            "task": "app.workers.sync_tasks.auto_sync_all_users_task",
-            "schedule": 600.0,  # Every 10 minutes
-        },
-    }
+    # NOTE: No beat_schedule here. The single daily auto-sync runs at midnight via the
+    # in-app asyncio scheduler (run_daily_sync_scheduler_task in sync_tasks.py), matching
+    # the "sync once a day" requirement. A Celery beat schedule would double-sync if a
+    # beat process were ever started alongside the app, so it is intentionally omitted.
 )
 
 # Auto-discover or import tasks

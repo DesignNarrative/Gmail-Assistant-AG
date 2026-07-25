@@ -244,15 +244,12 @@ class GmailSyncService:
                 )
                 self.db.add(email_record)
                 await self.db.flush() # Yields email_record.id for foreign keys
-                
-                # Trigger vector embedding task for email text & metadata
-                try:
-                    from app.workers.embedding_tasks import generate_email_embeddings_task
-                    generate_email_embeddings_task.delay(str(email_record.id))
-                    logger.info(f"Queued email embedding task for email {email_record.id}")
-                except Exception as e:
-                    logger.error(f"Failed to queue email embedding task: {e}")
-                
+
+                # NOTE: Email vector embeddings are generated after the sync completes,
+                # directly in run_sync_gmail_label (see sync_tasks.py). We intentionally do
+                # NOT enqueue a Celery task here: single-process mode runs no Celery worker,
+                # so a .delay() call would only pile unconsumed tasks into Redis.
+
                 # Process Attachments
                 for att in attachments_meta:
                     size_mb = att['file_size'] / (1024 * 1024)

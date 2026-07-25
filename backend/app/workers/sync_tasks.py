@@ -2,6 +2,7 @@ from app.workers.celery_app import celery_app
 from app.models.user import User
 from app.models.sync_log import SyncLog
 from app.models.attachment import Attachment
+from app.models.email import Email
 from app.services.gmail.gmail_client import GmailSyncService
 from app.core.config import get_settings
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -65,10 +66,14 @@ async def run_sync_gmail_label(user_id_str: str, sync_log_id_str: str):
                 await db.commit()
                 logger.info(f"Sync completed. Emails: {emails_count}, Attachments: {att_count}")
 
-                # After sync, run OCR + embedding for all unprocessed attachments directly in background
+                # After sync, run OCR + embedding for this user's unprocessed attachments only.
+                # Attachments link to a user via their parent email, so join on Email.user_id
+                # to avoid processing other users' attachments (cross-user isolation).
                 if att_count > 0:
                     unprocessed = (await db.execute(
-                        select(Attachment).where(Attachment.is_processed == False)
+                        select(Attachment)
+                        .join(Email, Email.id == Attachment.email_id)
+                        .where(Attachment.is_processed == False, Email.user_id == user.id)
                     )).scalars().all()
                     for att in unprocessed:
                         from app.workers.ocr_tasks import run_process_attachment
@@ -77,7 +82,6 @@ async def run_sync_gmail_label(user_id_str: str, sync_log_id_str: str):
                         await run_process_attachment(str(att.id))
 
                 # Also generate email embeddings directly in background for UNPROCESSED emails
-                from app.models.email import Email
                 unprocessed_emails = (await db.execute(
                     select(Email).where(Email.user_id == user.id, Email.is_processed == False)
                 )).scalars().all()

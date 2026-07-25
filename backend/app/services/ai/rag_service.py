@@ -364,9 +364,18 @@ INSTRUCTIONS:
 
     except Exception as e:
         logger.error(f"RAG pipeline error: {e}", exc_info=True)
-        answer = f"⚠️ **AI Service Error**: {str(e)}\n\nPlease check your Groq API key or try again shortly."
+        err_str = str(e)
+        if any(m in err_str.lower() for m in ["rate_limit", "429", "tokens per day", "rate limit"]):
+            answer = (
+                "⚠️ **Daily AI quota reached.**\n\n"
+                "Today's Groq token limit has been used up. The limit refills gradually, so please "
+                "try again in a little while — or upgrade the Groq plan for higher limits. "
+                "Your emails and documents are safe; nothing was lost."
+            )
+        else:
+            answer = f"⚠️ **AI Service Error**: {err_str}\n\nPlease try again shortly."
         model_used = None
-        source_type = "email_grounded"
+        source_type = "error"
 
     # Build source citations (only meaningful for email-grounded answers)
     sources: List[Dict[str, Any]] = []
@@ -379,6 +388,19 @@ INSTRUCTIONS:
             }
             for c in used_chunks
         ]
+
+    # Do not persist transient errors (rate limits, API outages) to chat history.
+    if source_type == "error":
+        from datetime import datetime, timezone
+        return {
+            "id": f"error-{datetime.now(timezone.utc).timestamp()}",
+            "question": question,
+            "answer": answer,
+            "sources": [],
+            "model_used": None,
+            "source_type": "error",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
 
     chat_msg = ChatMessage(
         user_id=u_uuid,
