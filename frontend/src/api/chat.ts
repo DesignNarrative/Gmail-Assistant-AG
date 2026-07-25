@@ -22,6 +22,7 @@ export type SourceType = 'email_grounded' | 'general_knowledge' | 'no_emails' | 
 
 export interface ChatMessage {
   id: string;
+  conversation_id?: string | null;
   question: string;
   answer: string | null;
   sources: SourceCitation[];
@@ -30,10 +31,35 @@ export interface ChatMessage {
   created_at: string;
 }
 
+export interface Conversation {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string | null;
+}
+
 export const chatApi = {
-  ask: async (question: string, mode: ChatMode = 'hybrid'): Promise<ChatMessage> => {
-    const response = await client.post<ChatMessage>('/api/v1/chat/ask', { question, mode });
+  ask: async (question: string, mode: ChatMode = 'hybrid', conversationId?: string | null): Promise<ChatMessage> => {
+    const response = await client.post<ChatMessage>('/api/v1/chat/ask', {
+      question,
+      mode,
+      conversation_id: conversationId ?? null,
+    });
     return response.data;
+  },
+
+  listConversations: async (): Promise<Conversation[]> => {
+    const response = await client.get<Conversation[]>('/api/v1/chat/conversations');
+    return response.data;
+  },
+
+  getConversationMessages: async (conversationId: string): Promise<ChatMessage[]> => {
+    const response = await client.get<ChatMessage[]>(`/api/v1/chat/conversations/${conversationId}`);
+    return response.data;
+  },
+
+  deleteConversation: async (conversationId: string): Promise<void> => {
+    await client.delete(`/api/v1/chat/conversations/${conversationId}`);
   },
 
   getHistory: async (): Promise<ChatMessage[]> => {

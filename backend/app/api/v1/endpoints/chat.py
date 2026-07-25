@@ -7,6 +7,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_active_user
 from app.models.user import User
 from app.models.chat_message import ChatMessage
+from app.models.conversation import Conversation
 from app.services.ai.rag_service import generate_rag_answer
 from typing import List, Optional, Any
 import logging
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 class AskQuestionRequest(BaseModel):
     question: str = Field(..., min_length=2, max_length=1000, description="The natural language question to ask the AI")
     mode: str = Field(default="hybrid", description="hybrid = email-grounded + general-knowledge fallback; email_only = strict")
+    conversation_id: Optional[str] = Field(default=None, description="Existing conversation to append to; a new one is created when omitted")
 
 class SourceCitation(BaseModel):
     filename: str
@@ -26,12 +28,19 @@ class SourceCitation(BaseModel):
 
 class ChatMessageResponse(BaseModel):
     id: str
+    conversation_id: Optional[str] = None
     question: str
     answer: Optional[str]
     sources: List[Any]
     model_used: Optional[str]
     source_type: Optional[str] = None
     created_at: str
+
+class ConversationResponse(BaseModel):
+    id: str
+    title: Optional[str]
+    created_at: str
+    updated_at: Optional[str]
 
 @router.post("/ask", response_model=ChatMessageResponse)
 async def ask_question(
@@ -46,12 +55,96 @@ async def ask_question(
             question=req.question.strip(),
             db=db,
             user_id=str(current_user.id),
-            mode=mode
+            mode=mode,
+            conversation_id=req.conversation_id
         )
         return result
     except Exception as e:
         logger.error(f"Chat RAG generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate answer: {str(e)}")
+
+@router.get("/conversations", response_model=List[ConversationResponse])
+async def list_conversations(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """List the user's conversations, most recently updated first."""
+    try:
+        stmt = (
+            select(Conversation)
+            .where(Conversation.user_id == current_user.id)
+            .order_by(desc(Conversation.updated_at), desc(Conversation.created_at))
+        )
+        result = await db.execute(stmt)
+        convs = result.scalars().all()
+        return [
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "created_at": c.created_at.isoformat() if c.created_at else "",
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+            }
+            for c in convs
+        ]
+    except Exception as e:
+        logger.error(f"Error listing conversations: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list conversations")
+
+
+async def _get_owned_conversation(conversation_id: str, user: User, db: AsyncSession) -> Conversation:
+    from uuid import UUID as _UUID
+    try:
+        cid = _UUID(conversation_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = await db.get(Conversation, cid)
+    if conv is None or conv.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
+
+
+@router.get("/conversations/{conversation_id}", response_model=List[ChatMessageResponse])
+async def get_conversation_messages(
+    conversation_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Return all messages in a conversation, in chronological order."""
+    await _get_owned_conversation(conversation_id, current_user, db)
+    stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conversation_id)
+        .order_by(ChatMessage.created_at)
+    )
+    result = await db.execute(stmt)
+    messages = result.scalars().all()
+    return [
+        {
+            "id": str(msg.id),
+            "conversation_id": str(msg.conversation_id) if msg.conversation_id else None,
+            "question": msg.question,
+            "answer": msg.answer,
+            "sources": msg.sources or [],
+            "model_used": msg.model_used,
+            "source_type": msg.source_type,
+            "created_at": msg.created_at.isoformat(),
+        }
+        for msg in messages
+    ]
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a conversation and its messages (cascade)."""
+    conv = await _get_owned_conversation(conversation_id, current_user, db)
+    await db.delete(conv)
+    await db.commit()
+    return {"detail": "Conversation deleted"}
+
 
 @router.get("/history", response_model=List[ChatMessageResponse])
 async def get_chat_history(

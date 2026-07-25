@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AppShell from '../components/layout/AppShell';
-import { chatApi, ChatMessage, ChatMode } from '../api/chat';
+import { chatApi, ChatMessage, ChatMode, Conversation } from '../api/chat';
 import { 
   Send, Bot, User, Sparkles, Trash2, FileText, 
-  HelpCircle, RefreshCw, CheckCircle2, AlertCircle, ExternalLink, BookOpen, ShieldCheck 
+  HelpCircle, RefreshCw, CheckCircle2, AlertCircle, ExternalLink, BookOpen, ShieldCheck, Plus, MessageSquare 
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -22,6 +22,8 @@ export default function AiChatPage() {
   const [fetchingHistory, setFetchingHistory] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<ChatMode>('hybrid');
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -29,21 +31,37 @@ export default function AiChatPage() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const loadHistory = async () => {
+  const loadConversations = async (selectFirst = false) => {
+    try {
+      const convs = await chatApi.listConversations();
+      setConversations(convs);
+      if (selectFirst && convs.length > 0) {
+        await loadConversationMessages(convs[0].id);
+      } else if (selectFirst) {
+        setFetchingHistory(false);
+      }
+    } catch (err: any) {
+      console.error('Failed to load conversations:', err);
+      setFetchingHistory(false);
+    }
+  };
+
+  const loadConversationMessages = async (conversationId: string) => {
     setFetchingHistory(true);
     setError(null);
     try {
-      const data = await chatApi.getHistory();
+      const data = await chatApi.getConversationMessages(conversationId);
       setMessages(data);
+      setCurrentConversationId(conversationId);
     } catch (err: any) {
-      console.error('Failed to load chat history:', err);
+      console.error('Failed to load conversation:', err);
     } finally {
       setFetchingHistory(false);
     }
   };
 
   useEffect(() => {
-    loadHistory();
+    loadConversations(true);
   }, []);
 
   useEffect(() => {
@@ -71,7 +89,10 @@ export default function AiChatPage() {
     setMessages((prev) => [...prev, tempUserMsg]);
 
     try {
-      const res = await chatApi.ask(q, mode);
+      const wasNewChat = !currentConversationId;
+      const res = await chatApi.ask(q, mode, currentConversationId);
+      if (res.conversation_id) setCurrentConversationId(res.conversation_id);
+      if (wasNewChat || res.conversation_id) loadConversations();
       setMessages((prev) => 
         prev.map((msg) => (msg.id === tempUserMsg.id ? res : msg))
       );
@@ -91,19 +112,75 @@ export default function AiChatPage() {
     }
   };
 
-  const handleClearHistory = async () => {
-    if (!window.confirm('Are you sure you want to clear your chat history?')) return;
+  const handleNewChat = () => {
+    setCurrentConversationId(null);
+    setMessages([]);
+    setError(null);
+    setInputQuestion('');
+  };
+
+  const handleSelectConversation = (conversationId: string) => {
+    if (conversationId === currentConversationId) return;
+    loadConversationMessages(conversationId);
+  };
+
+  const handleDeleteConversation = async (conversationId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this chat? This cannot be undone.')) return;
     try {
-      await chatApi.clearHistory();
-      setMessages([]);
+      await chatApi.deleteConversation(conversationId);
+      setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+      if (conversationId === currentConversationId) {
+        handleNewChat();
+      }
     } catch (err) {
-      console.error('Failed to clear history:', err);
+      console.error('Failed to delete conversation:', err);
     }
   };
 
   return (
     <AppShell>
-      <div className="flex flex-col h-[calc(100vh-6rem)] max-w-6xl mx-auto px-4 py-2">
+      <div className="flex h-[calc(100vh-6rem)] max-w-6xl mx-auto px-4 py-2 gap-3">
+        {/* Conversation sidebar */}
+        <div className="w-56 shrink-0 flex flex-col border-r border-white/10 pr-3">
+          <button
+            onClick={handleNewChat}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 mb-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-sm font-medium shadow-md shadow-purple-600/20 transition-all"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New Chat</span>
+          </button>
+          <div className="flex-1 overflow-y-auto space-y-1 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent -mr-1 pr-1">
+            {conversations.length === 0 ? (
+              <p className="text-[11px] text-slate-500 text-center mt-4">No chats yet</p>
+            ) : (
+              conversations.map((c) => (
+                <div
+                  key={c.id}
+                  onClick={() => handleSelectConversation(c.id)}
+                  className={`group flex items-center gap-2 px-2.5 py-2 rounded-lg cursor-pointer text-xs transition-all ${
+                    c.id === currentConversationId
+                      ? 'bg-purple-500/20 text-purple-100 border border-purple-500/30'
+                      : 'text-slate-300 hover:bg-white/[0.06] border border-transparent'
+                  }`}
+                >
+                  <MessageSquare className="w-3.5 h-3.5 shrink-0 text-purple-400" />
+                  <span className="truncate flex-1">{c.title || 'Untitled chat'}</span>
+                  <button
+                    onClick={(e) => handleDeleteConversation(c.id, e)}
+                    title="Delete chat"
+                    className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-400 transition-all shrink-0"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Main chat column */}
+        <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <div className="flex items-center justify-between py-3 border-b border-white/10 mb-4">
           <div className="flex items-center space-x-3">
@@ -152,15 +229,7 @@ export default function AiChatPage() {
               </button>
             </div>
 
-            {messages.length > 0 && (
-              <button
-                onClick={handleClearHistory}
-                className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 text-xs font-medium transition-all"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Clear History</span>
-              </button>
-            )}
+            {/* New Chat and past conversations now live in the sidebar */}
           </div>
         </div>
 
@@ -178,7 +247,7 @@ export default function AiChatPage() {
               </div>
               <h2 className="text-lg font-semibold text-white mb-2">How can I assist you today?</h2>
               <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-                I have indexed your synced Gmail messages and PDF attachments into a vector database. Ask me anything to retrieve precise information with source citations.
+                I've organized your synced Gmail messages and PDF attachments. Ask me anything and I'll answer with source citations.
               </p>
 
               {/* Suggested Questions */}
@@ -333,6 +402,7 @@ export default function AiChatPage() {
               ? 'Email-only mode: answers come strictly from your synced Gmail messages & attachments (LLaMA 3.3).'
               : 'Hybrid mode: answers use your synced emails first, falling back to general AI knowledge (labelled) when needed.'}
           </p>
+        </div>
         </div>
       </div>
     </AppShell>

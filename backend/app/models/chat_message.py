@@ -8,6 +8,7 @@ class ChatMessage(Base):
     __tablename__ = 'chat_messages'
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey('conversations.id', ondelete='CASCADE'), nullable=True, index=True)
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=True)
     sources = Column(JSONB, default=[])  # list of {filename, chunk_text, score}

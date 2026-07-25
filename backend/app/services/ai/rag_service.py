@@ -2,6 +2,7 @@ from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, desc
 from app.models.chat_message import ChatMessage
+from app.models.conversation import Conversation
 from app.models.document_chunk import DocumentChunk
 from app.models.attachment import Attachment
 from app.models.email import Email
@@ -253,7 +254,8 @@ async def generate_rag_answer(
     question: str,
     db: AsyncSession,
     user_id: str,
-    mode: str = "hybrid"
+    mode: str = "hybrid",
+    conversation_id: str = None
 ) -> Dict[str, Any]:
     """
     RAG pipeline with hybrid knowledge mode.
@@ -407,6 +409,7 @@ INSTRUCTIONS:
         from datetime import datetime, timezone
         return {
             "id": f"error-{datetime.now(timezone.utc).timestamp()}",
+            "conversation_id": conversation_id,
             "question": question,
             "answer": answer,
             "sources": [],
@@ -415,8 +418,30 @@ INSTRUCTIONS:
             "created_at": datetime.now(timezone.utc).isoformat()
         }
 
+    # Resolve the conversation: reuse the one passed in (verify ownership), else
+    # create a new one titled from the first question (minimal threading, #21).
+    from datetime import datetime, timezone
+    conversation = None
+    if conversation_id:
+        try:
+            conversation = await db.get(Conversation, UUID(conversation_id))
+        except (ValueError, TypeError):
+            conversation = None
+        if conversation is None or conversation.user_id != u_uuid:
+            conversation = None  # ignore invalid/foreign ids; start a fresh one
+    if conversation is None:
+        title = question.strip()[:40]
+        if len(question.strip()) > 40:
+            title += "…"
+        conversation = Conversation(user_id=u_uuid, title=title or "New Chat")
+        db.add(conversation)
+        await db.flush()  # assign conversation.id
+    else:
+        conversation.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
     chat_msg = ChatMessage(
         user_id=u_uuid,
+        conversation_id=conversation.id,
         question=question,
         answer=answer,
         sources=sources,
@@ -429,6 +454,7 @@ INSTRUCTIONS:
 
     return {
         "id": str(chat_msg.id),
+        "conversation_id": str(conversation.id),
         "question": question,
         "answer": answer,
         "sources": sources,

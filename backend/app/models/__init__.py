@@ -9,3 +9,4 @@ from .sync_log import SyncLog
 from .processed_document import ProcessedDocument
 from .document_chunk import DocumentChunk
 from .chat_message import ChatMessage
+from .conversation import Conversation
