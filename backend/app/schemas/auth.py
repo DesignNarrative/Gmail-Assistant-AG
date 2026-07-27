@@ -21,6 +21,10 @@ class TokenResponse(BaseModel):
 class RefreshRequest(BaseModel):
     refresh_token: str
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+    new_password: str = Field(..., min_length=8)
+
 class UserResponse(BaseModel):
     id: uuid.UUID
     email: EmailStr

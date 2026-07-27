@@ -3,14 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   MessageSquare, 
-  Search, 
-  Mail, 
-  Paperclip, 
-  BarChart3, 
-  Building2, 
-  Clock, 
   Settings, 
-  Shield,
   LogOut
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
@@ -22,16 +15,9 @@ export default function Sidebar() {
   const [collapsed, setCollapsed] = React.useState(false);
 
   const navItems = [
-    { name: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', ready: true },
-    { name: 'AI Chat', icon: MessageSquare, path: '/chat', ready: true },
-    { name: 'Search', icon: Search, path: '/search', ready: true },
-    { name: 'Emails', icon: Mail, path: '/emails', ready: false },
-    { name: 'Attachments', icon: Paperclip, path: '/attachments', ready: false },
-    { name: 'Reports', icon: BarChart3, path: '/reports', ready: false },
-    { name: 'Entities', icon: Building2, path: '/entities', ready: false },
-    { name: 'Timeline', icon: Clock, path: '/timeline', ready: false },
-    { name: 'Settings', icon: Settings, path: '/settings', ready: true },
-    { name: 'Audit Logs', icon: Shield, path: '/audit', ready: true },
+    { name: 'AI Chat', icon: MessageSquare, path: '/chat' },
+    { name: 'Home', icon: LayoutDashboard, path: '/dashboard' },
+    { name: 'Settings', icon: Settings, path: '/settings' },
   ];
 
   return (
@@ -61,15 +47,13 @@ export default function Sidebar() {
         {navItems.map((item) => (
           <div key={item.name} className="relative group">
             <NavLink
-              to={item.ready ? item.path : '#'}
+              to={item.path}
               className={({ isActive }) => cn(
                 "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200",
-                isActive && item.ready
+                isActive
                   ? "bg-primary-blue/10 text-white before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:bg-gold-accent before:rounded-r-md"
-                  : "text-text-secondary hover:bg-dark-bg hover:text-text-primary",
-                !item.ready && "opacity-50 cursor-not-allowed hover:bg-transparent"
+                  : "text-text-secondary hover:bg-dark-bg hover:text-text-primary"
               )}
-              onClick={(e) => !item.ready && e.preventDefault()}
             >
               <item.icon className="w-5 h-5 shrink-0" />
               {!collapsed && (
@@ -77,10 +61,10 @@ export default function Sidebar() {
               )}
             </NavLink>
             
-            {/* Tooltip for collapsed or coming soon */}
-            {(!item.ready || collapsed) && (
+            {/* Tooltip when collapsed */}
+            {collapsed && (
               <div className="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2 py-1 bg-dark-bg border border-dark-border rounded text-xs text-text-primary opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
-                {!item.ready ? `${item.name} (Coming Soon)` : item.name}
+                {item.name}
               </div>
             )}
           </div>

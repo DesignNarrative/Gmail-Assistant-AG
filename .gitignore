@@ -8,6 +8,7 @@
 .env.local
 .env.production
 .env.*.local
+director-setup/env.director
 
 # Python
 __pycache__/
@@ -17,7 +18,7 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+backend/dist/
 downloads/
 eggs/
 .eggs/
@@ -44,7 +45,8 @@ ENV/
 
 # Node.js / React
 frontend/node_modules/
-frontend/dist/
+# NOTE: frontend/dist/ is intentionally COMMITTED so the app runs on the
+# director's PC after a plain `git clone` (no Node.js build needed).
 frontend/build/
 frontend/.next/
 *.log

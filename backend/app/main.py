@@ -69,7 +69,37 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     lifespan=lifespan,
+    # Hide the interactive API explorer and schema on an internal tool unless
+    # explicitly running in DEBUG. Removes an information-disclosure surface.
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
+
+# Security response headers applied to every response (pages, assets, API).
+# CSP is intentionally scoped to what the built SPA needs: same-origin scripts,
+# same-origin + inline styles (React inline style attributes) + Google Fonts.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Content-Security-Policy"] = _CSP
+    return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -89,7 +119,9 @@ async def http_exception_handler(request, exc):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    # Return a generic message instead of the raw validation internals to avoid
+    # leaking schema/field structure. Client-side validation already guides users.
+    return JSONResponse(status_code=422, content={"detail": "Invalid input. Please check the submitted fields."})
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):

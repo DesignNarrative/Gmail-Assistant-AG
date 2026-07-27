@@ -39,8 +39,12 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
         if chunk:
             chunks.append(chunk)
             
-        # Move start forward with overlap
-        start = end - overlap
+        # Move start forward with overlap (must always advance to avoid infinite loop)
+        next_start = end - overlap
+        if next_start <= start:
+            # Boundary break pulled 'end' too close to 'start'; skip overlap to guarantee progress
+            next_start = end
+        start = next_start
         if start >= len(text):
             break
 

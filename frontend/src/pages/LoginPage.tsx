@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import LoginForm from '../components/auth/LoginForm';
 import RegisterForm from '../components/auth/RegisterForm';
+import ForgotPasswordForm from '../components/auth/ForgotPasswordForm';
 import { Search, Bot, ShieldCheck } from 'lucide-react';
 
 export default function LoginPage() {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
   const isLogin = mode === 'login';
 
   return (
@@ -57,14 +58,24 @@ export default function LoginPage() {
           
           <div className="text-center mb-8">
             <h2 className="text-2xl font-bold text-white mb-2">
-              {isLogin ? 'Welcome back' : 'Create your account'}
+              {isLogin ? 'Welcome back' : mode === 'register' ? 'Create your account' : 'Reset your password'}
             </h2>
             <p className="text-text-secondary text-sm">
-              {isLogin ? 'Sign in to AI Intelligence Assistant' : 'Join AI Intelligence Assistant'}
+              {isLogin
+                ? 'Sign in to AI Intelligence Assistant'
+                : mode === 'register'
+                ? 'Join AI Intelligence Assistant'
+                : 'Enter your email and choose a new password'}
             </p>
           </div>
           
-          {isLogin ? <LoginForm /> : <RegisterForm />}
+          {isLogin ? (
+            <LoginForm onForgotPassword={() => setMode('forgot')} />
+          ) : mode === 'register' ? (
+            <RegisterForm />
+          ) : (
+            <ForgotPasswordForm onDone={() => setMode('login')} />
+          )}
 
           <div className="mt-6 text-center text-sm">
             {isLogin ? (
@@ -76,7 +87,7 @@ export default function LoginPage() {
               </span>
             ) : (
               <span className="text-text-secondary">
-                Already have an account?{' '}
+                {mode === 'register' ? 'Already have an account?' : 'Remembered your password?'}{' '}
                 <button type="button" onClick={() => setMode('login')} className="text-primary-blue hover:text-secondary-blue transition-colors font-medium">
                   Sign in
                 </button>

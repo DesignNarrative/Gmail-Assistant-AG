@@ -1,14 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import AppShell from '../components/layout/AppShell';
 import { useAuthStore } from '../store/authStore';
-import { getGreeting } from '../utils/helpers';
-import { Mail, Search, FileText, BarChart, ExternalLink, Bot, Clock, RefreshCw, AlertCircle, CheckCircle, Download } from 'lucide-react';
+import { Mail, ArrowUp, RefreshCw, AlertCircle, CheckCircle, Download, ChevronDown, Sparkles } from 'lucide-react';
 import { Button } from '../components/ui/Button';
-import { gmailApi, SyncStats, SyncLogEntry } from '../api/gmail';
+import { gmailApi, SyncStats } from '../api/gmail';
 import { authApi } from '../api/auth';
 import client from '../api/client';
 
+const SUGGESTIONS = [
+  'Summarize my recent emails',
+  "What's inside my attachments?",
+  'Any payments or receipts?',
+];
+
 export default function DashboardPage() {
+  const navigate = useNavigate();
   const { user, setUser } = useAuthStore();
   const [stats, setStats] = useState<SyncStats>({
     total_emails: 0,
@@ -17,27 +24,21 @@ export default function DashboardPage() {
     total_size_bytes: 0,
     latest_sync: null
   });
-  const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>([]);
+  const [question, setQuestion] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+  const downloadMenuRef = useRef<HTMLDivElement>(null);
 
-  // Load stats and log history
+  // Load stats
   const loadData = async () => {
     try {
       const statsData = await gmailApi.getSyncStats();
       setStats(statsData);
-      
-      const logsData = await gmailApi.getSyncStatus(5);
-      setSyncLogs(logsData);
-
-      if (statsData.latest_sync && statsData.latest_sync.status === 'running') {
-        setIsSyncing(true);
-      } else {
-        setIsSyncing(false);
-      }
+      setIsSyncing(!!statsData.latest_sync && statsData.latest_sync.status === 'running');
     } catch (e) {
-      console.error("Failed to load dashboard sync stats:", e);
+      console.error('Failed to load dashboard stats:', e);
     }
   };
 
@@ -47,20 +48,29 @@ export default function DashboardPage() {
     // Check URL query parameters for connection success or error
     const params = new URLSearchParams(window.location.search);
     if (params.get('sync_connected') === 'true') {
-      setSuccessMsg("Gmail account connected successfully!");
-      // Refresh user context to ensure store knows Gmail is connected
+      setSuccessMsg('Your Gmail is connected!');
       authApi.getMe().then(updatedUser => {
         setUser(updatedUser);
       });
-      // Clean query params
       window.history.replaceState({}, document.title, window.location.pathname);
     } else if (params.get('error')) {
-      setErrorMsg("Failed to connect Gmail. Please try again.");
+      setErrorMsg("Couldn't connect Gmail. Please try again.");
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
 
-  // Poll status when syncing is active
+  // Close download menu when clicking outside
+  useEffect(() => {
+    const onClickOutside = (e: MouseEvent) => {
+      if (downloadMenuRef.current && !downloadMenuRef.current.contains(e.target as Node)) {
+        setShowDownloadMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, []);
+
+  // Poll status while updating
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (isSyncing) {
@@ -68,21 +78,18 @@ export default function DashboardPage() {
         try {
           const statsData = await gmailApi.getSyncStats();
           setStats(statsData);
-          
-          const logsData = await gmailApi.getSyncStatus(5);
-          setSyncLogs(logsData);
-          
+
           if (statsData.latest_sync && statsData.latest_sync.status !== 'running') {
             setIsSyncing(false);
             if (statsData.latest_sync.status === 'success') {
-              setSuccessMsg(`Sync complete! Labeled emails: ${statsData.latest_sync.emails_synced}, Attachments: ${statsData.latest_sync.attachments_downloaded}`);
+              setSuccessMsg('Your emails are up to date.');
             } else {
-              setErrorMsg(`Sync failed: ${statsData.latest_sync.error_message || "Unknown error"}`);
+              setErrorMsg("Something went wrong while updating. Please try again.");
             }
             clearInterval(interval);
           }
         } catch (e) {
-          console.error("Error polling sync status:", e);
+          console.error('Error polling sync status:', e);
           setIsSyncing(false);
           clearInterval(interval);
         }
@@ -93,6 +100,13 @@ export default function DashboardPage() {
     };
   }, [isSyncing]);
 
+  const handleAsk = (text?: string) => {
+    const q = (text ?? question).trim();
+    if (!q) return;
+    sessionStorage.setItem('pendingQuestion', q);
+    navigate('/chat');
+  };
+
   const handleConnectGmail = async () => {
     try {
       setErrorMsg(null);
@@ -102,7 +116,7 @@ export default function DashboardPage() {
         window.location.href = res.url;
       }
     } catch (e: any) {
-      setErrorMsg(e.response?.data?.detail || "Failed to initialize Google connection.");
+      setErrorMsg(e.response?.data?.detail || "Couldn't start the Gmail connection.");
     }
   };
 
@@ -111,16 +125,16 @@ export default function DashboardPage() {
       setErrorMsg(null);
       setSuccessMsg(null);
       setIsSyncing(true);
-      const res = await gmailApi.triggerSync();
-      setSuccessMsg("Synchronization started in background...");
+      await gmailApi.triggerSync();
       loadData();
     } catch (e: any) {
       setIsSyncing(false);
-      setErrorMsg(e.response?.data?.detail || "Failed to start synchronization.");
+      setErrorMsg(e.response?.data?.detail || "Couldn't start the update.");
     }
   };
 
   const handleDownloadEmails = async (downloadAll: boolean = false) => {
+    setShowDownloadMenu(false);
     try {
       setErrorMsg(null);
       setSuccessMsg(null);
@@ -128,301 +142,176 @@ export default function DashboardPage() {
         responseType: 'blob',
         params: downloadAll ? { download_all: true } : {},
       });
-      
+
       if (response.status === 204) {
         setSuccessMsg(downloadAll
-          ? "No synced emails to export yet. Run a sync first."
-          : "All synced emails have already been downloaded. No new emails to export!");
+          ? 'Nothing to download yet. Update your emails first.'
+          : 'You already have everything — no new emails to download.');
         return;
       }
-      
+
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
       link.setAttribute('download', downloadAll ? 'all_emails.zip' : 'new_emails.zip');
       document.body.appendChild(link);
       link.click();
-      setSuccessMsg(downloadAll ? "All emails downloaded successfully!" : "New emails downloaded successfully!");
+      setSuccessMsg('Your download has started.');
     } catch (e: any) {
-      console.error("Export failed:", e);
-      setErrorMsg("Failed to download email catalog.");
+      console.error('Export failed:', e);
+      setErrorMsg("Couldn't download your emails.");
     }
   };
 
-  const formatSize = (bytes: number) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+  const lastUpdated = stats.latest_sync?.completed_at
+    ? new Date(stats.latest_sync.completed_at).toLocaleString(undefined, {
+        day: '2-digit', month: 'short', hour: 'numeric', minute: '2-digit'
+      })
+    : null;
 
   return (
     <AppShell>
-      <div className="max-w-6xl mx-auto space-y-8 animate-fade-in">
-        
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-white tracking-tight">
-              {getGreeting()}, {user?.full_name.split(' ')[0]}
-            </h1>
-            <p className="text-text-secondary mt-1">Here is your corporate memory overview for today.</p>
-          </div>
-          {user?.is_gmail_connected && (
-            <Button 
-              variant="secondary" 
-              leftIcon={<RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />}
-              onClick={loadData}
-              disabled={isSyncing}
-            >
-              Refresh
-            </Button>
-          )}
-        </div>
+      <div className="max-w-2xl mx-auto flex flex-col justify-center min-h-[calc(100vh-10rem)] space-y-8 animate-fade-in py-8">
 
         {/* Feedback alerts */}
         {errorMsg && (
           <div className="p-4 bg-status-error/10 border border-status-error/20 rounded-xl text-status-error flex items-start gap-3">
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold text-sm">Action Failed</p>
-              <p className="text-xs text-status-error/80 mt-0.5">{errorMsg}</p>
-            </div>
+            <p className="text-sm">{errorMsg}</p>
           </div>
         )}
-
         {successMsg && (
           <div className="p-4 bg-status-success/10 border border-status-success/20 rounded-xl text-status-success flex items-start gap-3">
             <CheckCircle className="w-5 h-5 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold text-sm">Success</p>
-              <p className="text-xs text-status-success/80 mt-0.5">{successMsg}</p>
-            </div>
+            <p className="text-sm">{successMsg}</p>
           </div>
         )}
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard 
-            icon={Mail} 
-            label="Emails Synced" 
-            value={stats.total_emails.toString()} 
-            trend={user?.is_gmail_connected ? "Gmail Connected" : "Connection Required"} 
-            trendDown={!user?.is_gmail_connected} 
-          />
-          <StatCard 
-            icon={Search} 
-            label="Active Threads" 
-            value={stats.total_threads.toString()} 
-            trend="Organized conversations" 
-          />
-          <StatCard 
-            icon={FileText} 
-            label="Attachments Synced" 
-            value={stats.total_attachments.toString()} 
-            trend={formatSize(stats.total_size_bytes)} 
-          />
-          <StatCard 
-            icon={BarChart} 
-            label="AI Memory Size" 
-            value={stats.total_emails > 0 ? "Ready" : "Waiting for Sync"} 
-            trend="Powers your AI answers" 
-            trendDown={stats.total_emails === 0}
-          />
+        {/* Greeting */}
+        <div className="text-center space-y-2">
+          <h1 className="text-4xl font-bold text-white tracking-tight">
+            What can I help with?
+          </h1>
+          <p className="text-text-secondary text-base">Ask me anything about your emails.</p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          
-          {/* Main Action Area */}
-          <div className="lg:col-span-2 space-y-6">
-            
-            {/* Sync Setup Card */}
-            {!user?.is_gmail_connected ? (
-              <div className="glass-panel p-6 rounded-xl relative overflow-hidden group">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-primary-blue/10 rounded-full blur-2xl -mr-10 -mt-10" />
-                <h2 className="text-xl font-semibold text-white flex items-center gap-2 mb-4">
-                  <Mail className="w-5 h-5 text-status-warning" />
-                  Gmail Sync Required
-                </h2>
-                <p className="text-text-secondary mb-6 max-w-lg">
-                  To build your Corporate Memory system, link your Gmail account. We will synchronize ONLY emails matching the label <strong className="text-white">"Director's AI Assistant"</strong>.
-                </p>
-                <Button 
-                  variant="primary" 
-                  leftIcon={<ExternalLink className="w-4 h-4" />}
-                  onClick={handleConnectGmail}
-                >
-                  Connect Gmail Account
-                </Button>
-              </div>
-            ) : (
-              <div className="glass-panel p-6 rounded-xl relative overflow-hidden group">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-status-success/5 rounded-full blur-2xl -mr-10 -mt-10" />
-                <h2 className="text-xl font-semibold text-white flex items-center gap-2 mb-4">
-                  <CheckCircle className="w-5 h-5 text-status-success" />
-                  Gmail Connected
-                </h2>
-                <p className="text-text-secondary mb-6 max-w-lg">
-                  Your inbox integration is configured to sync labeled emails containing the label <strong className="text-white">"Director's AI Assistant"</strong>. Trigger a manual sync run below to pull latest documents.
-                </p>
-                <div className="flex flex-wrap gap-4 items-center">
-                  <Button 
-                    variant="gold" 
-                    leftIcon={<RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />}
-                    onClick={handleTriggerSync}
-                    disabled={isSyncing}
-                  >
-                    {isSyncing ? "Synchronizing Inbox..." : "Sync Labeled Emails"}
-                  </Button>
+        {user?.is_gmail_connected ? (
+          <>
+            {/* Big ask box */}
+            <form
+              onSubmit={(e) => { e.preventDefault(); handleAsk(); }}
+              className="flex items-center gap-2 bg-dark-card border border-dark-border focus-within:border-secondary-blue focus-within:ring-2 focus-within:ring-secondary-blue/20 rounded-2xl p-2.5 pl-5 shadow-xl transition-all"
+            >
+              <input
+                type="text"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Ask anything..."
+                autoFocus
+                className="flex-1 bg-transparent text-base text-white placeholder:text-text-secondary focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={!question.trim()}
+                title="Ask"
+                className="p-2.5 rounded-xl bg-white text-dark-bg hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-all shrink-0"
+              >
+                <ArrowUp className="w-5 h-5" />
+              </button>
+            </form>
 
-                  {!isSyncing && stats.total_emails > 0 && (
-                    <>
-                      <Button
-                        variant="secondary"
-                        leftIcon={<Download className="w-4 h-4" />}
-                        onClick={() => handleDownloadEmails(false)}
-                      >
-                        Download New Emails (.docx)
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        leftIcon={<Download className="w-4 h-4" />}
-                        onClick={() => handleDownloadEmails(true)}
-                      >
-                        Download All Emails (.docx)
-                      </Button>
-                    </>
-                  )}
-
-                  {isSyncing && (
-                    <span className="text-sm text-text-secondary animate-pulse flex items-center gap-2">
-                      Please keep this window open while processing attachments...
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Active AI Chat & Search Action Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="glass-panel p-6 rounded-xl border border-purple-500/20 bg-purple-500/[0.03] space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2.5">
-                    <div className="p-2 rounded-xl bg-purple-500/20 text-purple-400">
-                      <Bot className="w-5 h-5" />
-                    </div>
-                    <h3 className="font-bold text-white text-base">AI Intelligence Chat</h3>
-                  </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-500/30 text-purple-200">ACTIVE</span>
-                </div>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Ask natural language questions grounded in your synced emails and extracted PDF attachments using LLaMA 3.3.
-                </p>
+            {/* Suggestion chips */}
+            <div className="flex flex-wrap justify-center gap-2 -mt-2">
+              {SUGGESTIONS.map((s) => (
                 <button
-                  onClick={() => window.location.href = '/chat'}
-                  className="w-full py-2.5 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold text-xs transition-all shadow-md flex items-center justify-center space-x-2"
+                  key={s}
+                  onClick={() => handleAsk(s)}
+                  className="px-4 py-2 rounded-full bg-dark-card/60 border border-dark-border text-sm text-text-secondary hover:text-white hover:border-secondary-blue/40 transition-all"
                 >
-                  <span>Launch AI Chat</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
+                  {s}
                 </button>
-              </div>
-
-              <div className="glass-panel p-6 rounded-xl border border-amber-500/20 bg-amber-500/[0.03] space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2.5">
-                    <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400">
-                      <Search className="w-5 h-5" />
-                    </div>
-                    <h3 className="font-bold text-white text-base">Global Intelligence Search</h3>
-                  </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/30 text-amber-200">ACTIVE</span>
-                </div>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Perform instant full-text search with filters across all emails, OCR documents, and attachments.
-                </p>
-                <button
-                  onClick={() => window.location.href = '/search'}
-                  className="w-full py-2.5 rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-dark-bg font-bold text-xs transition-all shadow-md flex items-center justify-center space-x-2"
-                >
-                  <span>Open Global Search</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </button>
-              </div>
+              ))}
             </div>
 
-          </div>
-
-          {/* Right Sidebar - Activity Logs */}
-          <div className="glass-panel p-6 rounded-xl flex flex-col h-full min-h-[400px]">
-            <h2 className="text-lg font-semibold text-white mb-6 flex items-center gap-2">
-              <Clock className="w-4 h-4 text-text-secondary" />
-              Sync Log History
-            </h2>
-            
-            <div className="flex-1 space-y-4 overflow-y-auto max-h-[350px] pr-2">
-              {syncLogs.length > 0 ? (
-                syncLogs.map((log) => (
-                  <div key={log.id} className="p-3 bg-dark-card/50 border border-dark-border/40 rounded-lg space-y-1.5">
-                    <div className="flex justify-between items-start">
-                      <span className="text-xs font-semibold px-2 py-0.5 rounded uppercase tracking-wider bg-dark-bg border border-dark-border">
-                        {log.sync_type}
-                      </span>
-                      <span className={`text-xs font-semibold uppercase ${
-                        log.status === 'success' ? 'text-status-success' :
-                        log.status === 'failed' ? 'text-status-error' : 'text-status-warning animate-pulse'
-                      }`}>
-                        {log.status}
-                      </span>
-                    </div>
-                    <div className="text-xs text-text-secondary">
-                      Started: {new Date(log.started_at).toLocaleString()}
-                    </div>
-                    {log.status === 'success' && (
-                      <div className="text-xs text-text-primary flex justify-between">
-                        <span>Emails: {log.emails_synced}</span>
-                        <span>Attachments: {log.attachments_downloaded}</span>
-                      </div>
-                    )}
-                    {log.status === 'failed' && log.error_message && (
-                      <div className="text-[10px] text-status-error bg-status-error/5 p-1 rounded border border-status-error/15 break-words">
-                        {log.error_message}
-                      </div>
-                    )}
-                  </div>
-                ))
+            {/* Quiet status line */}
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 text-sm text-text-secondary pt-4">
+              {isSyncing ? (
+                <span className="flex items-center gap-2 animate-pulse">
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  Updating your emails... please keep this window open.
+                </span>
               ) : (
-                <div className="h-full flex flex-col items-center justify-center text-center p-4">
-                  <div className="w-12 h-12 bg-dark-card rounded-full flex items-center justify-center mb-4 border border-dark-border">
-                    <Clock className="w-5 h-5 text-text-secondary/50" />
+                <>
+                  <span>
+                    {stats.total_emails} emails and {stats.total_attachments} files ready
+                    {lastUpdated && <span className="text-text-secondary/60"> · Updated {lastUpdated}</span>}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+                      onClick={handleTriggerSync}
+                      className="!py-1.5 !px-3 !text-xs"
+                    >
+                      Update emails
+                    </Button>
+                    {stats.total_emails > 0 && (
+                      <div className="relative" ref={downloadMenuRef}>
+                        <Button
+                          variant="secondary"
+                          leftIcon={<Download className="w-3.5 h-3.5" />}
+                          onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+                          className="!py-1.5 !px-3 !text-xs"
+                        >
+                          Download
+                          <ChevronDown className="w-3 h-3 ml-1" />
+                        </Button>
+                        {showDownloadMenu && (
+                          <div className="absolute top-full mt-2 right-0 w-44 bg-dark-card border border-dark-border rounded-xl shadow-2xl overflow-hidden z-20">
+                            <button
+                              onClick={() => handleDownloadEmails(false)}
+                              className="w-full text-left px-4 py-2.5 text-xs text-text-primary hover:bg-dark-bg transition-colors"
+                            >
+                              New emails only
+                            </button>
+                            <button
+                              onClick={() => handleDownloadEmails(true)}
+                              className="w-full text-left px-4 py-2.5 text-xs text-text-primary hover:bg-dark-bg transition-colors border-t border-dark-border"
+                            >
+                              All emails
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <p className="text-text-primary font-medium mb-1 text-sm">No runs recorded</p>
-                  <p className="text-xs text-text-secondary">Sync your email to create execution logs.</p>
-                </div>
+                </>
               )}
             </div>
+          </>
+        ) : (
+          /* Not connected yet — one simple card */
+          <div className="glass-panel p-8 rounded-2xl text-center space-y-4">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-primary-blue/10 border border-primary-blue/20 flex items-center justify-center">
+              <Mail className="w-7 h-7 text-secondary-blue" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-white">Connect your Gmail to get started</h2>
+              <p className="text-sm text-text-secondary mt-1 max-w-md mx-auto">
+                Your assistant will read only the emails you label for it — nothing else.
+              </p>
+            </div>
+            <Button
+              variant="primary"
+              leftIcon={<Sparkles className="w-4 h-4" />}
+              onClick={handleConnectGmail}
+            >
+              Connect Gmail
+            </Button>
           </div>
-
-        </div>
+        )}
 
       </div>
     </AppShell>
-  );
-}
-
-function StatCard({ icon: Icon, label, value, trend, trendDown = false }: { icon: any, label: string, value: string, trend: string, trendDown?: boolean }) {
-  return (
-    <div className="glass-panel p-5 rounded-xl hover:border-secondary-blue/30 transition-colors group">
-      <div className="flex items-start justify-between mb-2">
-        <span className="text-sm font-medium text-text-secondary">{label}</span>
-        <div className="p-2 rounded-lg bg-dark-card group-hover:bg-primary-blue/10 transition-colors">
-          <Icon className="w-4 h-4 text-secondary-blue" />
-        </div>
-      </div>
-      <div className="text-3xl font-bold text-white mb-1 tracking-tight">{value}</div>
-      <div className={`text-xs ${trendDown ? 'text-status-warning' : 'text-status-success'}`}>
-        {trend}
-      </div>
-    </div>
   );
 }

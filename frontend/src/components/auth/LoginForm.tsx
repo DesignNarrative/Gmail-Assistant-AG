@@ -15,7 +15,7 @@ const loginSchema = z.object({
 
 type LoginFormValues = z.infer<typeof loginSchema>;
 
-export default function LoginForm() {
+export default function LoginForm({ onForgotPassword }: { onForgotPassword?: () => void }) {
   const [showPassword, setShowPassword] = useState(false);
   const { login } = useAuthStore();
   const navigate = useNavigate();
@@ -74,14 +74,14 @@ export default function LoginForm() {
         }
       />
 
-      <div className="flex items-center justify-between text-sm">
-        <label className="flex items-center gap-2 cursor-pointer group">
-          <input type="checkbox" className="rounded border-dark-border bg-dark-bg text-primary-blue focus:ring-primary-blue/50" />
-          <span className="text-text-secondary group-hover:text-text-primary transition-colors">Remember me</span>
-        </label>
-        <a href="#" className="text-primary-blue hover:text-secondary-blue transition-colors">
+      <div className="flex items-center justify-end text-sm">
+        <button
+          type="button"
+          onClick={onForgotPassword}
+          className="text-primary-blue hover:text-secondary-blue transition-colors"
+        >
           Forgot password?
-        </a>
+        </button>
       </div>
 
       <Button type="submit" fullWidth loading={isSubmitting}>

@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
     SECRET_KEY: str
+    # Optional dedicated key for encrypting data at rest (Google tokens). When empty,
+    # the encryptor falls back to deriving a key from SECRET_KEY (backward compatible).
+    ENCRYPTION_KEY: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7

@@ -17,6 +17,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
     payload = decode_token(token)
     if payload is None:
         raise credentials_exception
+    # Reject tokens that are not access tokens (e.g. refresh or oauth_state tokens
+    # must never be accepted as a bearer credential). Legacy access tokens issued
+    # before this claim existed have no 'type' and remain accepted.
+    token_type = payload.get("type")
+    if token_type is not None and token_type != "access":
+        raise credentials_exception
     user_id: str = payload.get("sub")
     if user_id is None:
         raise credentials_exception

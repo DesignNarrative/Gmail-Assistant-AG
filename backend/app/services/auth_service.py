@@ -99,3 +99,20 @@ async def revoke_token(db: AsyncSession, token: str) -> bool:
         await db.commit()
         return True
     return False
+
+async def reset_password(db: AsyncSession, email: str, new_password: str) -> bool:
+    """Local password reset (app runs on the owner's own PC, no email delivery).
+    Sets a new password, clears any lockout and revokes all active sessions."""
+    user = await get_user_by_email(db, email)
+    if not user:
+        return False
+    user.hashed_password = hash_password(new_password)
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    result = await db.execute(select(RefreshToken).where(RefreshToken.user_id == user.id, RefreshToken.revoked == False))
+    for rt in result.scalars().all():
+        rt.revoked = True
+        rt.revoked_at = now_naive
+    await db.commit()
+    return True

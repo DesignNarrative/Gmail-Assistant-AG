@@ -3,17 +3,10 @@ import AppShell from '../components/layout/AppShell';
 import { chatApi, ChatMessage, ChatMode, Conversation } from '../api/chat';
 import { 
   Send, Bot, User, Sparkles, Trash2, FileText, 
-  HelpCircle, RefreshCw, CheckCircle2, AlertCircle, ExternalLink, BookOpen, ShieldCheck, Plus, MessageSquare 
+  RefreshCw, CheckCircle2, AlertCircle, ExternalLink, BookOpen, ShieldCheck, Plus, MessageSquare 
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-
-const SUGGESTED_QUESTIONS = [
-  "What is the student name and fee amount in the receipt?",
-  "Which college did the applicant attend for HSC?",
-  "Summarize the main details from the synced documents.",
-  "Are there any payment or fee receipts found?"
-];
 
 export default function AiChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -28,6 +21,16 @@ export default function AiChatPage() {
   const [streamingId, setStreamingId] = useState<string | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-grow the input like ChatGPT (up to ~5 lines)
+  useEffect(() => {
+    const el = inputRef.current;
+    if (el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+    }
+  }, [inputQuestion]);
 
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -63,7 +66,16 @@ export default function AiChatPage() {
   };
 
   useEffect(() => {
-    loadConversations(true);
+    // Question handed off from the Home page ask box: start a fresh chat and send it
+    const pending = sessionStorage.getItem('pendingQuestion');
+    if (pending) {
+      sessionStorage.removeItem('pendingQuestion');
+      setFetchingHistory(false);
+      loadConversations(false);
+      handleSend(pending);
+    } else {
+      loadConversations(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -271,27 +283,9 @@ export default function AiChatPage() {
                 <Bot className="w-8 h-8" />
               </div>
               <h2 className="text-lg font-semibold text-white mb-2">How can I assist you today?</h2>
-              <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+              <p className="text-xs text-slate-400 leading-relaxed">
                 I've organized your synced Gmail messages and PDF attachments. Ask me anything and I'll answer with source citations.
               </p>
-
-              {/* Suggested Questions */}
-              <div className="w-full space-y-2 text-left">
-                <p className="text-xs font-medium text-slate-400 mb-2 flex items-center gap-1.5">
-                  <HelpCircle className="w-3.5 h-3.5 text-purple-400" />
-                  Try asking one of these:
-                </p>
-                {SUGGESTED_QUESTIONS.map((q, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => handleSend(q)}
-                    className="w-full text-left p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.08] border border-white/10 text-xs text-slate-200 hover:text-white transition-all flex items-center justify-between group"
-                  >
-                    <span>{q}</span>
-                    <Sparkles className="w-3.5 h-3.5 text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </button>
-                ))}
-              </div>
             </div>
           ) : (
             messages.map((msg) => (
@@ -409,15 +403,23 @@ export default function AiChatPage() {
               e.preventDefault();
               handleSend();
             }}
-            className="flex items-center space-x-2 bg-white/[0.05] border border-white/15 focus-within:border-purple-500/50 focus-within:ring-2 focus-within:ring-purple-500/20 rounded-2xl p-2 transition-all"
+            className="flex items-end space-x-2 bg-white/[0.05] border border-white/15 focus-within:border-purple-500/50 focus-within:ring-2 focus-within:ring-purple-500/20 rounded-2xl p-2 transition-all"
           >
-            <input
-              type="text"
+            <textarea
+              ref={inputRef}
               value={inputQuestion}
               onChange={(e) => setInputQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter sends; Shift+Enter inserts a new line (like ChatGPT)
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
               placeholder="Ask a question about your synced emails or documents..."
               disabled={loading}
-              className="flex-1 bg-transparent text-sm text-white placeholder-slate-400 px-3 focus:outline-none disabled:opacity-50"
+              rows={1}
+              className="flex-1 bg-transparent text-sm text-white placeholder-slate-400 px-3 py-2 focus:outline-none disabled:opacity-50 resize-none overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent"
             />
             <button
               type="submit"

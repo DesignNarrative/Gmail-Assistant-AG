@@ -4,6 +4,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Lazily initialized RapidOCR engine (PP-OCRv4 onnx models, CPU).
+# Kept module-level so models load once per process, not per attachment.
+_rapidocr_engine = None
+
+
+def _get_rapidocr():
+    global _rapidocr_engine
+    if _rapidocr_engine is None:
+        from rapidocr_onnxruntime import RapidOCR
+        logger.info("Loading RapidOCR (PP-OCRv4) engine...")
+        _rapidocr_engine = RapidOCR()
+    return _rapidocr_engine
+
 class DocumentProcessor:
     @staticmethod
     def extract_text(file_path: str, mime_type: str) -> tuple[str, int, str, float]:
@@ -93,19 +106,18 @@ class DocumentProcessor:
         # 2. If text is empty/too short (scanned document), run OCR
         if len(full_text) < 50:
             from pdf2image import convert_from_path
-            import pytesseract
 
             logger.info(f"PDF appears to be scanned (extracted length: {len(full_text)}). Running OCR...")
             text_content = []
             method = "ocr"
 
             try:
-                images = convert_from_path(file_path, dpi=150)
+                images = convert_from_path(file_path, dpi=300)
                 page_count = len(images)
 
                 for i, img in enumerate(images):
                     logger.info(f"Running OCR on page {i+1}/{page_count}")
-                    page_text = pytesseract.image_to_string(img, lang='eng')
+                    page_text = DocumentProcessor._ocr_best(img)
                     if page_text:
                         text_content.append(page_text)
             except Exception as e:
@@ -117,13 +129,110 @@ class DocumentProcessor:
         return full_text, page_count, method
 
     @staticmethod
+    def _flatten_image(img):
+        """Convert to RGB, compositing transparency onto a white background
+        (transparent PNGs otherwise render as black and destroy OCR)."""
+        from PIL import Image
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGBA")
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            bg.paste(img, mask=img.split()[-1])
+            return bg
+        return img.convert("RGB")
+
+    @staticmethod
+    def _upscale_for_ocr(img, target: int = 2000):
+        """Upscale small images so text glyphs are large enough for OCR."""
+        from PIL import Image
+        w, h = img.size
+        if max(w, h) >= target:
+            return img
+        scale = max(1, round(target / max(w, h)))
+        return img.resize((w * scale, h * scale), Image.LANCZOS)
+
+    @staticmethod
+    def _ocr_rapidocr(img) -> tuple[str, float]:
+        """Run RapidOCR (deep-learning). Returns (text, mean_confidence).
+        Retries on an upscaled copy and keeps whichever pass reads more text."""
+        import numpy as np
+        engine = _get_rapidocr()
+
+        def run(pil_img):
+            result, _ = engine(np.array(pil_img))
+            if not result:
+                return "", 0.0
+            # Keep confident lines only; PP-OCRv4 confidences are well calibrated
+            lines = [(text, conf) for _, text, conf in result if conf >= 0.5]
+            if not lines:
+                return "", 0.0
+            text = "\n".join(t for t, _ in lines)
+            mean_conf = sum(c for _, c in lines) / len(lines)
+            return text, mean_conf
+
+        text1, conf1 = run(img)
+        upscaled = DocumentProcessor._upscale_for_ocr(img)
+        if upscaled is not img:
+            text2, conf2 = run(upscaled)
+            # Prefer the pass that recovered more characters; break ties on confidence
+            if len(text2) > len(text1) or (len(text2) == len(text1) and conf2 > conf1):
+                return text2, conf2
+        return text1, conf1
+
+    @staticmethod
+    def _ocr_tesseract(img) -> str:
+        """Preprocessed multi-pass Tesseract: flatten, upscale, grayscale,
+        autocontrast, sharpen, then try several page-segmentation modes."""
+        from PIL import ImageOps, ImageFilter
+        import pytesseract
+
+        prepared = DocumentProcessor._upscale_for_ocr(DocumentProcessor._flatten_image(img))
+        gray = ImageOps.autocontrast(ImageOps.grayscale(prepared))
+        gray = gray.filter(ImageFilter.SHARPEN)
+
+        best = ""
+        for psm in (3, 6, 11):
+            try:
+                txt = pytesseract.image_to_string(gray, lang="eng", config=f"--oem 1 --psm {psm}")
+            except Exception as e:
+                logger.warning(f"Tesseract psm={psm} pass failed: {e}")
+                continue
+            if len(txt.strip()) > len(best.strip()):
+                best = txt
+        return best.strip()
+
+    @staticmethod
+    def _ocr_best(img) -> str:
+        """Best-effort OCR: RapidOCR (primary, most accurate) with a
+        preprocessed Tesseract fallback / second opinion."""
+        img = DocumentProcessor._flatten_image(img)
+
+        rapid_text, rapid_conf = "", 0.0
+        try:
+            rapid_text, rapid_conf = DocumentProcessor._ocr_rapidocr(img)
+        except Exception as e:
+            logger.warning(f"RapidOCR failed, falling back to Tesseract: {e}")
+
+        # High-confidence deep-learning result wins outright
+        if rapid_text and rapid_conf >= 0.85:
+            logger.info(f"OCR via RapidOCR: {len(rapid_text)} chars (conf {rapid_conf:.2f})")
+            return rapid_text
+
+        tess_text = DocumentProcessor._ocr_tesseract(img)
+
+        # Otherwise keep whichever engine recovered more text
+        if len(rapid_text) >= len(tess_text):
+            logger.info(f"OCR via RapidOCR (low conf {rapid_conf:.2f}): {len(rapid_text)} chars")
+            return rapid_text
+        logger.info(f"OCR via Tesseract fallback: {len(tess_text)} chars")
+        return tess_text
+
+    @staticmethod
     def _process_image(file_path: str) -> str:
         from PIL import Image
-        import pytesseract
 
         logger.info(f"Running OCR on image {file_path}")
         with Image.open(file_path) as img:
-            return pytesseract.image_to_string(img, lang='eng')
+            return DocumentProcessor._ocr_best(img)
 
     @staticmethod
     def _process_docx(file_path: str) -> str:

@@ -26,7 +26,7 @@ def create_access_token(data: dict, expires_delta: Union[timedelta, None] = None
         expire = datetime.now(timezone.utc) + expires_delta
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "type": "access"})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
@@ -53,8 +53,11 @@ from cryptography.fernet import Fernet
 import base64
 
 def get_encryptor() -> Fernet:
-    # Derive a 32-byte key from settings.SECRET_KEY for Fernet
-    key = hashlib.sha256(settings.SECRET_KEY.encode()).digest()
+    # Prefer a dedicated ENCRYPTION_KEY so the data-at-rest key is not identical to
+    # the JWT signing key. Falls back to deriving from SECRET_KEY when ENCRYPTION_KEY
+    # is unset, which keeps previously-encrypted values decryptable (no data migration).
+    key_source = settings.ENCRYPTION_KEY or settings.SECRET_KEY
+    key = hashlib.sha256(key_source.encode()).digest()
     key_b64 = base64.urlsafe_b64encode(key)
     return Fernet(key_b64)
 

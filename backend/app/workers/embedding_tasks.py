@@ -76,8 +76,15 @@ async def run_generate_email_embeddings(email_id_str: str):
 
         # Step 3: Save chunks to DB
         async with SessionLocal() as db:
-            # Delete old chunks for this email (in case of re-sync)
-            await db.execute(delete(DocumentChunk).where(DocumentChunk.email_id == e_id))
+            # Delete old BODY chunks for this email (in case of re-sync).
+            # Attachment-derived chunks also carry email_id, so filter them out
+            # (attachment_id IS NULL) to avoid wiping attachment embeddings.
+            await db.execute(
+                delete(DocumentChunk).where(
+                    DocumentChunk.email_id == e_id,
+                    DocumentChunk.attachment_id.is_(None),
+                )
+            )
 
             # Fetch email record to assign user_id and mark as processed
             stmt_email = select(Email).where(Email.id == e_id)
