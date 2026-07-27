@@ -9,6 +9,7 @@ from app.models.email import Email
 from app.services.ai.embedding_service import generate_single_embedding
 from app.core.config import get_settings
 import logging
+import json
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,30 @@ def _call_groq(system_prompt: str, user_message: str, temperature: float = 0.1):
     return response.choices[0].message.content.strip(), GROQ_MODEL
 
 
+async def _stream_groq(system_prompt: str, user_message: str, temperature: float = 0.1):
+    """Call Groq with streaming enabled; yield answer text deltas as they arrive."""
+    from groq import AsyncGroq
+    client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+    stream = await client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ],
+        temperature=temperature,
+        max_tokens=3000,
+        stream=True
+    )
+    async for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
+
+
+def _sse(payload: Dict[str, Any]) -> str:
+    """Format a payload as a Server-Sent Events data frame."""
+    return f"data: {json.dumps(payload)}\n\n"
+
+
 async def retrieve_relevant_chunks(
     question: str,
     db: AsyncSession,
@@ -250,24 +275,21 @@ async def fetch_full_email_catalog(db: AsyncSession, user_id: UUID) -> str:
     return "\n".join(lines)
 
 
-async def generate_rag_answer(
+async def _prepare_rag(
     question: str,
     db: AsyncSession,
-    user_id: str,
-    mode: str = "hybrid",
-    conversation_id: str = None
+    u_uuid: UUID,
+    mode: str
 ) -> Dict[str, Any]:
     """
-    RAG pipeline with hybrid knowledge mode.
+    Shared retrieval + prompt-building for the blocking and streaming RAG paths.
 
-    mode: "hybrid"     — email-grounded answers when relevant context exists; otherwise
-                          the LLM answers from its own general knowledge (clearly flagged).
-          "email_only" — strict: only answer from synced emails; say "Not mentioned"
-                         when nothing relevant is found.
-    Returns a dict including 'source_type': email_grounded | general_knowledge | no_emails.
+    Decides the knowledge source and returns:
+      source_type   — no_emails | general_knowledge | email_grounded
+      static_answer — pre-built answer when no LLM call is needed (else None)
+      system_prompt / user_message / temperature — the LLM call to make
+      used_chunks   — chunks included in the context (for citations)
     """
-    u_uuid = UUID(user_id)
-
     # Count vector chunks for this user
     count_result = await db.execute(
         text("SELECT COUNT(*) FROM document_chunks WHERE embedding IS NOT NULL AND user_id = :user_id"),
@@ -299,54 +321,67 @@ async def generate_rag_answer(
 
     context_parts: List[str] = []
     used_chunks: List[Dict[str, Any]] = []
-    answer = ""
-    model_used = None
-    source_type = "email_grounded"
 
-    try:
-        if chunk_count == 0 and not (mode == "hybrid" and is_general_question):
-            # No emails synced and not a general-knowledge question -> prompt to sync
-            source_type = "no_emails"
-            answer = (
+    if chunk_count == 0 and not (mode == "hybrid" and is_general_question):
+        # No emails synced and not a general-knowledge question -> prompt to sync
+        return {
+            "source_type": "no_emails",
+            "static_answer": (
                 "⚠️ **No emails or documents have been synced yet.**\n\n"
                 "Please go to the **Dashboard** and click **'Sync Labeled Emails'** to import your Gmail data from the "
                 "'Director's AI Assistant' label. Once synced, I can answer any question based on those emails and attachments."
-            )
-            model_used = None
-        elif mode == "hybrid" and not has_relevant_context:
-            # Hybrid mode: no relevant email context -> answer from the LLM's general
-            # knowledge, clearly flagged (no email citations).
-            source_type = "general_knowledge"
-            answer, model_used = _call_groq(GENERAL_KNOWLEDGE_PROMPT, question, temperature=0.3)
-        else:
-            # Email-grounded strict RAG (email_only mode, or hybrid with relevant context)
-            source_type = "email_grounded"
+            ),
+            "system_prompt": None,
+            "user_message": None,
+            "temperature": 0.0,
+            "used_chunks": [],
+        }
 
-            # Inject full email catalog for broad queries OR when chunks are low
-            if is_broad_query or chunk_count < 5:
-                email_catalog = await fetch_full_email_catalog(db, u_uuid)
-                context_parts.append(email_catalog)
+    if mode == "hybrid" and not has_relevant_context:
+        # Hybrid mode: no relevant email context -> answer from the LLM's general
+        # knowledge, clearly flagged (no email citations).
+        return {
+            "source_type": "general_knowledge",
+            "static_answer": None,
+            "system_prompt": GENERAL_KNOWLEDGE_PROMPT,
+            "user_message": question,
+            "temperature": 0.3,
+            "used_chunks": [],
+        }
 
-            # Add vector-retrieved chunks (most relevant content)
-            total_chars = sum(len(cp) for cp in context_parts)
-            for chunk in chunks:
-                if total_chars + len(chunk["chunk_text"]) > MAX_CONTEXT_CHARS:
-                    break
-                context_parts.append(
-                    f"[SOURCE: {chunk['filename']}]\n"
-                    f"{chunk['chunk_text']}"
-                )
-                total_chars += len(chunk["chunk_text"])
-                used_chunks.append(chunk)
+    # Email-grounded strict RAG (email_only mode, or hybrid with relevant context)
 
-            if not context_parts:
-                # Edge case: chunks existed but nothing gathered
-                answer = "Not mentioned in available emails."
-                model_used = None
-            else:
-                context_text = "\n\n---\n\n".join(context_parts)
+    # Inject full email catalog for broad queries OR when chunks are low
+    if is_broad_query or chunk_count < 5:
+        email_catalog = await fetch_full_email_catalog(db, u_uuid)
+        context_parts.append(email_catalog)
 
-                user_message = f"""CONTEXT — Director's synced Gmail emails and documents:
+    # Add vector-retrieved chunks (most relevant content)
+    total_chars = sum(len(cp) for cp in context_parts)
+    for chunk in chunks:
+        if total_chars + len(chunk["chunk_text"]) > MAX_CONTEXT_CHARS:
+            break
+        context_parts.append(
+            f"[SOURCE: {chunk['filename']}]\n"
+            f"{chunk['chunk_text']}"
+        )
+        total_chars += len(chunk["chunk_text"])
+        used_chunks.append(chunk)
+
+    if not context_parts:
+        # Edge case: chunks existed but nothing gathered
+        return {
+            "source_type": "email_grounded",
+            "static_answer": "Not mentioned in available emails.",
+            "system_prompt": None,
+            "user_message": None,
+            "temperature": 0.0,
+            "used_chunks": [],
+        }
+
+    context_text = "\n\n---\n\n".join(context_parts)
+
+    user_message = f"""CONTEXT — Director's synced Gmail emails and documents:
 
 {context_text}
 
@@ -361,63 +396,75 @@ INSTRUCTIONS:
 - Cite each email/document ONCE per section using: > 📧 "Subject" — From: Name — Date
 - Do not repeat the same citation on every bullet point.
 - Be concise and professional. Give expert analysis, not just a summary."""
-                answer, model_used = _call_groq(SYSTEM_PROMPT, user_message, temperature=0.1)
 
-        # Hybrid fallback: if the email-grounded answer admits it couldn't find
-        # the information in the synced data, answer from general knowledge instead
-        # (clearly flagged). email_only mode keeps the "not mentioned" answer.
-        if mode == "hybrid" and source_type == "email_grounded" and _answer_is_insufficient(answer):
-            logger.info("Email-grounded answer insufficient -> falling back to general knowledge")
-            source_type = "general_knowledge"
-            answer, model_used = _call_groq(GENERAL_KNOWLEDGE_PROMPT, question, temperature=0.3)
-            used_chunks = []
+    return {
+        "source_type": "email_grounded",
+        "static_answer": None,
+        "system_prompt": SYSTEM_PROMPT,
+        "user_message": user_message,
+        "temperature": 0.1,
+        "used_chunks": used_chunks,
+    }
 
-    except Exception as e:
-        logger.error(f"RAG pipeline error: {e}", exc_info=True)
-        err_str = str(e)
-        if any(m in err_str.lower() for m in ["rate_limit", "429", "tokens per day", "rate limit"]):
-            answer = (
-                "⚠️ **Daily AI quota reached.**\n\n"
-                "Today's Groq token limit has been used up. The limit refills gradually, so please "
-                "try again in a little while — or upgrade the Groq plan for higher limits. "
-                "Your emails and documents are safe; nothing was lost."
-            )
-        else:
-            answer = f"⚠️ **AI Service Error**: {err_str}\n\nPlease try again shortly."
-        model_used = None
-        source_type = "error"
 
-    # Build source citations (only meaningful for email-grounded answers)
-    sources: List[Dict[str, Any]] = []
-    if source_type == "email_grounded" and used_chunks:
-        sources = [
-            {
-                "filename": c["filename"],
-                "chunk_text": c["chunk_text"][:300],
-                "score": round(c["similarity_score"], 3),
-                # Email metadata for richer citations (may be None for non-email chunks)
-                "subject": c.get("subject"),
-                "sender": c.get("sender_name") or c.get("sender_email"),
-                "sender_email": c.get("sender_email"),
-                "date": c.get("date_sent"),
-            }
-            for c in used_chunks
-        ]
+def _error_answer(e: Exception) -> str:
+    """User-friendly answer text for an AI-service failure."""
+    err_str = str(e)
+    if any(m in err_str.lower() for m in ["rate_limit", "429", "tokens per day", "rate limit"]):
+        return (
+            "⚠️ **Daily AI quota reached.**\n\n"
+            "Today's Groq token limit has been used up. The limit refills gradually, so please "
+            "try again in a little while — or upgrade the Groq plan for higher limits. "
+            "Your emails and documents are safe; nothing was lost."
+        )
+    return f"⚠️ **AI Service Error**: {err_str}\n\nPlease try again shortly."
 
-    # Do not persist transient errors (rate limits, API outages) to chat history.
-    if source_type == "error":
-        from datetime import datetime, timezone
-        return {
-            "id": f"error-{datetime.now(timezone.utc).timestamp()}",
-            "conversation_id": conversation_id,
-            "question": question,
-            "answer": answer,
-            "sources": [],
-            "model_used": None,
-            "source_type": "error",
-            "created_at": datetime.now(timezone.utc).isoformat()
+
+def _build_sources(source_type: str, used_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build source citations (only meaningful for email-grounded answers)."""
+    if source_type != "email_grounded" or not used_chunks:
+        return []
+    return [
+        {
+            "filename": c["filename"],
+            "chunk_text": c["chunk_text"][:300],
+            "score": round(c["similarity_score"], 3),
+            # Email metadata for richer citations (may be None for non-email chunks)
+            "subject": c.get("subject"),
+            "sender": c.get("sender_name") or c.get("sender_email"),
+            "sender_email": c.get("sender_email"),
+            "date": c.get("date_sent"),
         }
+        for c in used_chunks
+    ]
 
+
+def _error_result(question: str, answer: str, conversation_id: str) -> Dict[str, Any]:
+    """Transient-error response; NOT persisted to chat history."""
+    from datetime import datetime, timezone
+    return {
+        "id": f"error-{datetime.now(timezone.utc).timestamp()}",
+        "conversation_id": conversation_id,
+        "question": question,
+        "answer": answer,
+        "sources": [],
+        "model_used": None,
+        "source_type": "error",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+async def _persist_chat_message(
+    db: AsyncSession,
+    u_uuid: UUID,
+    conversation_id: str,
+    question: str,
+    answer: str,
+    sources: List[Dict[str, Any]],
+    model_used: str,
+    source_type: str
+) -> Dict[str, Any]:
+    """Resolve/create the conversation, persist the message, return the response dict."""
     # Resolve the conversation: reuse the one passed in (verify ownership), else
     # create a new one titled from the first question (minimal threading, #21).
     from datetime import datetime, timezone
@@ -462,3 +509,141 @@ INSTRUCTIONS:
         "source_type": source_type,
         "created_at": chat_msg.created_at.isoformat()
     }
+
+
+async def generate_rag_answer(
+    question: str,
+    db: AsyncSession,
+    user_id: str,
+    mode: str = "hybrid",
+    conversation_id: str = None
+) -> Dict[str, Any]:
+    """
+    RAG pipeline with hybrid knowledge mode (blocking, non-streaming).
+
+    mode: "hybrid"     — email-grounded answers when relevant context exists; otherwise
+                          the LLM answers from its own general knowledge (clearly flagged).
+          "email_only" — strict: only answer from synced emails; say "Not mentioned"
+                         when nothing relevant is found.
+    Returns a dict including 'source_type': email_grounded | general_knowledge | no_emails.
+    """
+    u_uuid = UUID(user_id)
+
+    answer = ""
+    model_used = None
+    source_type = "email_grounded"
+    used_chunks: List[Dict[str, Any]] = []
+
+    try:
+        prep = await _prepare_rag(question, db, u_uuid, mode)
+        source_type = prep["source_type"]
+        used_chunks = prep["used_chunks"]
+
+        if prep["static_answer"] is not None:
+            answer = prep["static_answer"]
+            model_used = None
+        else:
+            answer, model_used = _call_groq(prep["system_prompt"], prep["user_message"], prep["temperature"])
+
+        # Hybrid fallback: if the email-grounded answer admits it couldn't find
+        # the information in the synced data, answer from general knowledge instead
+        # (clearly flagged). email_only mode keeps the "not mentioned" answer.
+        if mode == "hybrid" and source_type == "email_grounded" and _answer_is_insufficient(answer):
+            logger.info("Email-grounded answer insufficient -> falling back to general knowledge")
+            source_type = "general_knowledge"
+            answer, model_used = _call_groq(GENERAL_KNOWLEDGE_PROMPT, question, temperature=0.3)
+            used_chunks = []
+
+    except Exception as e:
+        logger.error(f"RAG pipeline error: {e}", exc_info=True)
+        answer = _error_answer(e)
+        model_used = None
+        source_type = "error"
+        used_chunks = []
+
+    sources = _build_sources(source_type, used_chunks)
+
+    # Do not persist transient errors (rate limits, API outages) to chat history.
+    if source_type == "error":
+        return _error_result(question, answer, conversation_id)
+
+    return await _persist_chat_message(
+        db, u_uuid, conversation_id, question, answer, sources, model_used, source_type
+    )
+
+
+async def generate_rag_answer_stream(
+    question: str,
+    db: AsyncSession,
+    user_id: str,
+    mode: str = "hybrid",
+    conversation_id: str = None
+):
+    """
+    Streaming variant of generate_rag_answer. Yields Server-Sent Events frames:
+
+      {"type": "meta",  "source_type": ...}     — knowledge source decided (pre-answer)
+      {"type": "token", "content": "..."}       — an answer text delta
+      {"type": "reset", "source_type": ...}     — discard partial answer (hybrid fallback / error)
+      {"type": "done",  "message": {...}}       — final persisted ChatMessage payload
+
+    The full answer is persisted to chat history once streaming completes
+    (same behavior as the blocking path; errors are not persisted).
+    """
+    u_uuid = UUID(user_id)
+
+    answer = ""
+    model_used = None
+    source_type = "email_grounded"
+    used_chunks: List[Dict[str, Any]] = []
+
+    try:
+        prep = await _prepare_rag(question, db, u_uuid, mode)
+        source_type = prep["source_type"]
+        used_chunks = prep["used_chunks"]
+        yield _sse({"type": "meta", "source_type": source_type})
+
+        if prep["static_answer"] is not None:
+            answer = prep["static_answer"]
+            yield _sse({"type": "token", "content": answer})
+        else:
+            model_used = GROQ_MODEL
+            async for delta in _stream_groq(prep["system_prompt"], prep["user_message"], prep["temperature"]):
+                answer += delta
+                yield _sse({"type": "token", "content": delta})
+
+        # Hybrid fallback: the streamed email-grounded answer admitted it couldn't
+        # find the info — tell the client to clear it, then stream a clearly-flagged
+        # general-knowledge answer instead.
+        if mode == "hybrid" and source_type == "email_grounded" and _answer_is_insufficient(answer):
+            logger.info("Email-grounded answer insufficient -> falling back to general knowledge (stream)")
+            source_type = "general_knowledge"
+            used_chunks = []
+            answer = ""
+            model_used = GROQ_MODEL
+            yield _sse({"type": "reset", "source_type": source_type})
+            async for delta in _stream_groq(GENERAL_KNOWLEDGE_PROMPT, question, temperature=0.3):
+                answer += delta
+                yield _sse({"type": "token", "content": delta})
+
+    except Exception as e:
+        logger.error(f"RAG streaming error: {e}", exc_info=True)
+        answer = _error_answer(e)
+        model_used = None
+        source_type = "error"
+        used_chunks = []
+        yield _sse({"type": "reset", "source_type": source_type})
+        yield _sse({"type": "token", "content": answer})
+
+    sources = _build_sources(source_type, used_chunks)
+
+    # Do not persist transient errors (rate limits, API outages) to chat history.
+    if source_type == "error":
+        yield _sse({"type": "done", "message": _error_result(question, answer, conversation_id)})
+        return
+
+    result = await _persist_chat_message(
+        db, u_uuid, conversation_id, question, answer, sources, model_used, source_type
+    )
+    yield _sse({"type": "done", "message": result})
+

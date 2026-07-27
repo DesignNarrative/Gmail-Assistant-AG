@@ -8,7 +8,7 @@ from app.core.dependencies import get_current_active_user
 from app.models.user import User
 from app.models.chat_message import ChatMessage
 from app.models.conversation import Conversation
-from app.services.ai.rag_service import generate_rag_answer
+from app.services.ai.rag_service import generate_rag_answer, generate_rag_answer_stream
 from typing import List, Optional, Any
 import logging
 import io
@@ -62,6 +62,34 @@ async def ask_question(
     except Exception as e:
         logger.error(f"Chat RAG generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate answer: {str(e)}")
+
+
+@router.post("/ask/stream")
+async def ask_question_stream(
+    req: AskQuestionRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Streaming variant of /ask. Returns Server-Sent Events frames:
+    meta -> token* -> (reset -> token*)? -> done (with the persisted message).
+    """
+    logger.info(f"User {current_user.email} asked (stream): '{req.question}'")
+    mode = req.mode if req.mode in ("hybrid", "email_only") else "hybrid"
+    return StreamingResponse(
+        generate_rag_answer_stream(
+            question=req.question.strip(),
+            db=db,
+            user_id=str(current_user.id),
+            mode=mode,
+            conversation_id=req.conversation_id
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable proxy buffering (nginx)
+        }
+    )
 
 @router.get("/conversations", response_model=List[ConversationResponse])
 async def list_conversations(

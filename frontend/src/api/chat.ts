@@ -38,6 +38,16 @@ export interface Conversation {
   updated_at: string | null;
 }
 
+// Callbacks fired while an answer streams in token-by-token (SSE).
+export interface StreamCallbacks {
+  // Knowledge source decided (before any tokens arrive)
+  onMeta?: (sourceType: SourceType) => void;
+  // A new token arrived; `fullAnswer` is the accumulated text so far
+  onToken?: (fullAnswer: string) => void;
+  // Discard the partial answer (hybrid fallback / error) and start over
+  onReset?: (sourceType: SourceType) => void;
+}
+
 export const chatApi = {
   ask: async (question: string, mode: ChatMode = 'hybrid', conversationId?: string | null): Promise<ChatMessage> => {
     const response = await client.post<ChatMessage>('/api/v1/chat/ask', {
@@ -46,6 +56,86 @@ export const chatApi = {
       conversation_id: conversationId ?? null,
     });
     return response.data;
+  },
+
+  // Streaming variant of ask(): consumes Server-Sent Events from /ask/stream and
+  // fires callbacks as tokens arrive. Resolves with the final persisted message.
+  // Uses fetch (not axios) because axios cannot read response streams in the browser.
+  askStream: async (
+    question: string,
+    mode: ChatMode = 'hybrid',
+    conversationId?: string | null,
+    callbacks?: StreamCallbacks
+  ): Promise<ChatMessage> => {
+    const baseURL = (import.meta as any).env.VITE_API_URL || '';
+    const token = localStorage.getItem('abhinav_ai_token');
+    const response = await fetch(`${baseURL}/api/v1/chat/ask/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ question, mode, conversation_id: conversationId ?? null }),
+    });
+
+    if (!response.ok || !response.body) {
+      let detail = `Stream request failed (${response.status})`;
+      try {
+        const err = await response.json();
+        if (err?.detail) detail = err.detail;
+      } catch { /* non-JSON error body */ }
+      throw new Error(detail);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullAnswer = '';
+    let finalMessage: ChatMessage | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE frames are separated by a blank line (\n\n)
+      let sep;
+      while ((sep = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data: '));
+        if (!dataLine) continue;
+
+        let evt: any;
+        try {
+          evt = JSON.parse(dataLine.slice(6));
+        } catch {
+          continue; // skip malformed frame
+        }
+
+        switch (evt.type) {
+          case 'meta':
+            callbacks?.onMeta?.(evt.source_type as SourceType);
+            break;
+          case 'token':
+            fullAnswer += evt.content;
+            callbacks?.onToken?.(fullAnswer);
+            break;
+          case 'reset':
+            fullAnswer = '';
+            callbacks?.onReset?.(evt.source_type as SourceType);
+            break;
+          case 'done':
+            finalMessage = evt.message as ChatMessage;
+            break;
+        }
+      }
+    }
+
+    if (!finalMessage) {
+      throw new Error('The answer stream ended unexpectedly. Please try again.');
+    }
+    return finalMessage;
   },
 
   listConversations: async (): Promise<Conversation[]> => {

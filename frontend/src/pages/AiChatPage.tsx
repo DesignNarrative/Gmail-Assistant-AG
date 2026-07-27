@@ -24,6 +24,8 @@ export default function AiChatPage() {
   const [mode, setMode] = useState<ChatMode>('hybrid');
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  // id of the temp message currently receiving streamed tokens (shows the typing caret)
+  const [streamingId, setStreamingId] = useState<string | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -90,7 +92,29 @@ export default function AiChatPage() {
 
     try {
       const wasNewChat = !currentConversationId;
-      const res = await chatApi.ask(q, mode, currentConversationId);
+      const updateTemp = (patch: Partial<ChatMessage>) => {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === tempUserMsg.id ? { ...m, ...patch } : m))
+        );
+      };
+
+      let res: ChatMessage;
+      try {
+        // Token-by-token streaming (SSE) — answer text appears live as it's generated
+        setStreamingId(tempUserMsg.id);
+        res = await chatApi.askStream(q, mode, currentConversationId, {
+          onMeta: (sourceType) => updateTemp({ source_type: sourceType }),
+          onToken: (fullAnswer) => updateTemp({ answer: fullAnswer }),
+          onReset: (sourceType) => updateTemp({ answer: null, source_type: sourceType }),
+        });
+      } catch (streamErr) {
+        // Streaming unavailable (proxy/network/auth) — fall back to the blocking endpoint
+        console.warn('Streaming failed, falling back to standard request:', streamErr);
+        setStreamingId(null);
+        updateTemp({ answer: null, source_type: null });
+        res = await chatApi.ask(q, mode, currentConversationId);
+      }
+
       if (res.conversation_id) setCurrentConversationId(res.conversation_id);
       if (wasNewChat || res.conversation_id) loadConversations();
       setMessages((prev) => 
@@ -109,6 +133,7 @@ export default function AiChatPage() {
       );
     } finally {
       setLoading(false);
+      setStreamingId(null);
     }
   };
 
@@ -322,6 +347,11 @@ export default function AiChatPage() {
                             {msg.answer || ''}
                           </ReactMarkdown>
                         </div>
+
+                        {/* Typing caret while the answer is streaming in */}
+                        {streamingId === msg.id && (
+                          <span className="inline-block w-2 h-4 bg-purple-400 rounded-sm animate-pulse" aria-hidden="true" />
+                        )}
 
                         {/* Source Citations */}
                         {msg.sources && msg.sources.length > 0 && (
