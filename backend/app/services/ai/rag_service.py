@@ -326,6 +326,7 @@ async def _prepare_rag(
         # No emails synced and not a general-knowledge question -> prompt to sync
         return {
             "source_type": "no_emails",
+            "top_score": top_score,
             "static_answer": (
                 "⚠️ **No emails or documents have been synced yet.**\n\n"
                 "Please go to the **Dashboard** and click **'Sync Labeled Emails'** to import your Gmail data from the "
@@ -342,6 +343,7 @@ async def _prepare_rag(
         # knowledge, clearly flagged (no email citations).
         return {
             "source_type": "general_knowledge",
+            "top_score": top_score,
             "static_answer": None,
             "system_prompt": GENERAL_KNOWLEDGE_PROMPT,
             "user_message": question,
@@ -372,6 +374,7 @@ async def _prepare_rag(
         # Edge case: chunks existed but nothing gathered
         return {
             "source_type": "email_grounded",
+            "top_score": top_score,
             "static_answer": "Not mentioned in available emails.",
             "system_prompt": None,
             "user_message": None,
@@ -399,6 +402,7 @@ INSTRUCTIONS:
 
     return {
         "source_type": "email_grounded",
+        "top_score": top_score,
         "static_answer": None,
         "system_prompt": SYSTEM_PROMPT,
         "user_message": user_message,
@@ -548,8 +552,16 @@ async def generate_rag_answer(
         # Hybrid fallback: if the email-grounded answer admits it couldn't find
         # the information in the synced data, answer from general knowledge instead
         # (clearly flagged). email_only mode keeps the "not mentioned" answer.
-        if mode == "hybrid" and source_type == "email_grounded" and _answer_is_insufficient(answer):
-            logger.info("Email-grounded answer insufficient -> falling back to general knowledge")
+        #
+        # Confidence gate: only fall back when the top email match was WEAK
+        # (< GENERAL_QUESTION_RELEVANCE_THRESHOLD). When emails match strongly, a
+        # phrase like "does not mention a specific salary" is just an honest PARTIAL
+        # answer to a compound question -> keep the grounded answer instead of
+        # discarding the whole thing and losing the parts the emails DID answer.
+        if (mode == "hybrid" and source_type == "email_grounded"
+                and prep["top_score"] < GENERAL_QUESTION_RELEVANCE_THRESHOLD
+                and _answer_is_insufficient(answer)):
+            logger.info("Email-grounded answer insufficient AND weak match -> falling back to general knowledge")
             source_type = "general_knowledge"
             answer, model_used = _call_groq(GENERAL_KNOWLEDGE_PROMPT, question, temperature=0.3)
             used_chunks = []
@@ -615,8 +627,10 @@ async def generate_rag_answer_stream(
         # Hybrid fallback: the streamed email-grounded answer admitted it couldn't
         # find the info — tell the client to clear it, then stream a clearly-flagged
         # general-knowledge answer instead.
-        if mode == "hybrid" and source_type == "email_grounded" and _answer_is_insufficient(answer):
-            logger.info("Email-grounded answer insufficient -> falling back to general knowledge (stream)")
+        if (mode == "hybrid" and source_type == "email_grounded"
+                and prep["top_score"] < GENERAL_QUESTION_RELEVANCE_THRESHOLD
+                and _answer_is_insufficient(answer)):
+            logger.info("Email-grounded answer insufficient AND weak match -> falling back to general knowledge (stream)")
             source_type = "general_knowledge"
             used_chunks = []
             answer = ""
