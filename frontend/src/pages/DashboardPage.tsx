@@ -202,13 +202,20 @@ export default function DashboardPage() {
               onSubmit={(e) => { e.preventDefault(); handleAsk(); }}
               className="flex items-center gap-2 bg-dark-card border border-dark-border focus-within:border-secondary-blue focus-within:ring-2 focus-within:ring-secondary-blue/20 rounded-2xl p-2.5 pl-5 shadow-xl transition-all"
             >
-              <input
-                type="text"
+              <textarea
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter asks; Shift+Enter inserts a new line (like ChatGPT)
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleAsk();
+                  }
+                }}
                 placeholder="Ask anything..."
                 autoFocus
-                className="flex-1 bg-transparent text-base text-white placeholder:text-text-secondary focus:outline-none"
+                rows={1}
+                className="flex-1 bg-transparent text-base text-white placeholder:text-text-secondary focus:outline-none resize-none"
               />
               <button
                 type="submit"
