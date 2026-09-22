@@ -11,7 +11,7 @@ class Attachment(Base):
     filename = Column(String, nullable=False)
     mime_type = Column(String, nullable=False)
     file_size = Column(Integer, nullable=False)
-    storage_path = Column(String, nullable=False)   # path on secure disk
-    content_hash = Column(String, nullable=False)   # SHA256 of attachment content
+    storage_path = Column(String, nullable=True)    # path on secure disk (None if download skipped)
+    content_hash = Column(String, nullable=True)    # SHA256 of attachment content (None if download skipped)
     is_processed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

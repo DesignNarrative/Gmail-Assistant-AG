@@ -14,8 +14,32 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 import logging
 
+import uuid
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+class AttachmentDetailItem(BaseModel):
+    id: str
+    filename: str
+    mime_type: str
+    file_size: int
+    has_extracted_text: bool = False
+    extracted_text_preview: Optional[str] = None
+
+class EmailDetailResponse(BaseModel):
+    id: str
+    subject: str
+    sender_name: Optional[str] = None
+    sender_email: str
+    recipients: List[Any] = []
+    cc: List[Any] = []
+    date_sent: Optional[str] = None
+    date_received: Optional[str] = None
+    body_text: Optional[str] = None
+    snippet: Optional[str] = None
+    has_attachments: bool = False
+    attachments: List[AttachmentDetailItem] = []
 
 class SearchResultItem(BaseModel):
     id: str
@@ -227,3 +251,64 @@ async def get_analytics_summary(
     except Exception as e:
         logger.error(f"Error fetching analytics summary: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch analytics summary")
+
+@router.get("/emails/{email_id}", response_model=EmailDetailResponse)
+async def get_email_detail(
+    email_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        try:
+            target_uuid = uuid.UUID(email_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid email ID format")
+
+        # Query email with user_id check for strict security isolation
+        stmt = select(Email).where(Email.id == target_uuid, Email.user_id == current_user.id)
+        email_obj = (await db.execute(stmt)).scalars().first()
+
+        if not email_obj:
+            raise HTTPException(status_code=404, detail="Email not found or access denied")
+
+        # Query attachments
+        att_stmt = select(Attachment).where(Attachment.email_id == email_obj.id)
+        attachments = (await db.execute(att_stmt)).scalars().all()
+
+        attachment_items: List[AttachmentDetailItem] = []
+        for att in attachments:
+            doc_stmt = select(ProcessedDocument).where(ProcessedDocument.attachment_id == att.id)
+            doc_obj = (await db.execute(doc_stmt)).scalars().first()
+
+            has_extracted = bool(doc_obj and doc_obj.extracted_text)
+            text_preview = doc_obj.extracted_text[:1200] if has_extracted else None
+
+            attachment_items.append(AttachmentDetailItem(
+                id=str(att.id),
+                filename=att.filename,
+                mime_type=att.mime_type,
+                file_size=att.file_size,
+                has_extracted_text=has_extracted,
+                extracted_text_preview=text_preview
+            ))
+
+        return EmailDetailResponse(
+            id=str(email_obj.id),
+            subject=email_obj.subject or "(No Subject)",
+            sender_name=email_obj.sender_name,
+            sender_email=email_obj.sender_email,
+            recipients=email_obj.recipients or [],
+            cc=email_obj.cc or [],
+            date_sent=email_obj.date_sent.isoformat() if email_obj.date_sent else None,
+            date_received=email_obj.date_received.isoformat() if email_obj.date_received else None,
+            body_text=email_obj.body_text or "",
+            snippet=email_obj.snippet or "",
+            has_attachments=email_obj.has_attachments,
+            attachments=attachment_items
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching email detail {email_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch email details")
+

@@ -10,7 +10,7 @@ const client = axios.create({
 });
 
 client.interceptors.request.use((config) => {
-  const token = localStorage.getItem('abhinav_ai_token');
+  const token = localStorage.getItem('inboxiq_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -26,13 +26,13 @@ client.interceptors.response.use(
     
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
-      const refreshToken = localStorage.getItem('abhinav_ai_refresh');
+      const refreshToken = localStorage.getItem('inboxiq_refresh');
       
       if (refreshToken) {
         try {
-          const res = await axios.post('http://localhost:8000/api/v1/auth/refresh', { refresh_token: refreshToken });
+          const res = await axios.post('/api/v1/auth/refresh', { refresh_token: refreshToken });
           const newAccessToken = res.data.access_token;
-          localStorage.setItem('abhinav_ai_token', newAccessToken);
+          localStorage.setItem('inboxiq_token', newAccessToken);
           originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
           return client(originalRequest);
         } catch (refreshError) {

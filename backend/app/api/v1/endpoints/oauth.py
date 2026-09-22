@@ -92,8 +92,8 @@ async def google_callback(
         await db.commit()
         
         logger.info(f"Successfully connected Gmail for user {user_id}")
-        return RedirectResponse(url=f"http://localhost:3000/dashboard?sync_connected=true")
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/dashboard?sync_connected=true")
     except Exception as e:
         logger.error(f"Error in OAuth callback processing: {e}")
         await db.rollback()
-        return RedirectResponse(url=f"http://localhost:3000/dashboard?error=oauth_processing_failed")
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/dashboard?error=oauth_processing_failed")

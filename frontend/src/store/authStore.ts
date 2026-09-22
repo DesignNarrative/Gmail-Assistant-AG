@@ -19,8 +19,8 @@ export const useAuthStore = create<AuthStore>((set) => ({
     set({ isLoading: true });
     try {
       const tokens = await authApi.login(credentials);
-      localStorage.setItem('abhinav_ai_token', tokens.access_token);
-      localStorage.setItem('abhinav_ai_refresh', tokens.refresh_token);
+      localStorage.setItem('inboxiq_token', tokens.access_token);
+      localStorage.setItem('inboxiq_refresh', tokens.refresh_token);
       
       const user = await authApi.getMe();
       set({ user, accessToken: tokens.access_token, isAuthenticated: true, isLoading: false });
@@ -31,20 +31,20 @@ export const useAuthStore = create<AuthStore>((set) => ({
   },
   
   logout: () => {
-    localStorage.removeItem('abhinav_ai_token');
-    localStorage.removeItem('abhinav_ai_refresh');
+    localStorage.removeItem('inboxiq_token');
+    localStorage.removeItem('inboxiq_refresh');
     set({ user: null, accessToken: null, isAuthenticated: false });
   },
   
   initializeAuth: async () => {
-    const token = localStorage.getItem('abhinav_ai_token');
+    const token = localStorage.getItem('inboxiq_token');
     if (token) {
       try {
         const user = await authApi.getMe();
         set({ user, accessToken: token, isAuthenticated: true, isLoading: false });
       } catch (e) {
-        localStorage.removeItem('abhinav_ai_token');
-        localStorage.removeItem('abhinav_ai_refresh');
+        localStorage.removeItem('inboxiq_token');
+        localStorage.removeItem('inboxiq_refresh');
         set({ user: null, accessToken: null, isAuthenticated: false, isLoading: false });
       }
     } else {

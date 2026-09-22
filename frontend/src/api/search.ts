@@ -12,6 +12,30 @@ export interface SearchResultItem {
   email_id?: string | null;
 }
 
+export interface AttachmentDetail {
+  id: string;
+  filename: string;
+  mime_type: string;
+  file_size: number;
+  has_extracted_text: boolean;
+  extracted_text_preview?: string | null;
+}
+
+export interface EmailDetailResponse {
+  id: string;
+  subject: string;
+  sender_name?: string | null;
+  sender_email: string;
+  recipients: Array<{ name?: string; email: string } | string>;
+  cc: Array<{ name?: string; email: string } | string>;
+  date_sent?: string | null;
+  date_received?: string | null;
+  body_text?: string | null;
+  snippet?: string | null;
+  has_attachments: boolean;
+  attachments: AttachmentDetail[];
+}
+
 export interface GlobalSearchResponse {
   query: string;
   total_results: number;
@@ -46,6 +70,11 @@ export const searchApi = {
 
   getAnalytics: async (): Promise<AnalyticsSummaryResponse> => {
     const response = await client.get<AnalyticsSummaryResponse>('/api/v1/search/analytics/summary');
+    return response.data;
+  },
+
+  getEmailDetail: async (emailId: string): Promise<EmailDetailResponse> => {
+    const response = await client.get<EmailDetailResponse>(`/api/v1/search/emails/${emailId}`);
     return response.data;
   }
 };

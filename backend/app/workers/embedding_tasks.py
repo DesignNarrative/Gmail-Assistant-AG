@@ -71,7 +71,7 @@ async def run_generate_email_embeddings(email_id_str: str):
             logger.warning(f"No chunks produced for email {email_id_str}")
             return
 
-        embeddings = generate_embeddings(chunks)
+        embeddings = await asyncio.to_thread(generate_embeddings, chunks)
         logger.info(f"Generated {len(embeddings)} embeddings for email {email_id_str}")
 
         # Step 3: Save chunks to DB
@@ -187,7 +187,7 @@ async def run_generate_document_embeddings(processed_doc_id_str: str):
             logger.warning(f"No chunks produced for document {processed_doc_id_str}")
             return
 
-        embeddings = generate_embeddings(chunks)
+        embeddings = await asyncio.to_thread(generate_embeddings, chunks)
         logger.info(f"Generated {len(embeddings)} embeddings for document {processed_doc_id_str} ({att_filename})")
 
         # Step 3: Save chunks to DB

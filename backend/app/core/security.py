@@ -52,9 +52,10 @@ def generate_state_token() -> str:
 from cryptography.fernet import Fernet
 import base64
 
-def get_encryptor() -> Fernet:
-    # Derive a 32-byte key from settings.SECRET_KEY for Fernet
-    key = hashlib.sha256(settings.SECRET_KEY.encode()).digest()
+def get_encryptor(key_source: str = None) -> Fernet:
+    # Derive a 32-byte key from ENCRYPTION_KEY or SECRET_KEY for Fernet
+    secret = key_source or settings.ENCRYPTION_KEY or settings.SECRET_KEY
+    key = hashlib.sha256(secret.encode()).digest()
     key_b64 = base64.urlsafe_b64encode(key)
     return Fernet(key_b64)
 
@@ -67,10 +68,17 @@ def encrypt_value(value: str) -> str:
 def decrypt_value(encrypted_val: str) -> str:
     if not encrypted_val:
         return ""
-    f = get_encryptor()
     try:
+        f = get_encryptor()
         return f.decrypt(encrypted_val.encode()).decode()
     except Exception:
+        # If decryption fails and ENCRYPTION_KEY was set, try falling back to SECRET_KEY for legacy tokens
+        if settings.ENCRYPTION_KEY and settings.ENCRYPTION_KEY != settings.SECRET_KEY:
+            try:
+                f_fallback = get_encryptor(key_source=settings.SECRET_KEY)
+                return f_fallback.decrypt(encrypted_val.encode()).decode()
+            except Exception:
+                pass
         return ""
 
 def create_state_token(user_id: str) -> str:

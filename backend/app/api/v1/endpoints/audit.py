@@ -104,9 +104,9 @@ async def get_system_status(
             database_status=db_status,
             redis_status="operational",
             celery_worker_status="operational",
-            vector_search_engine="pgvector (384-dim BAAI/bge-small-en-v1.5)",
-            llm_model="Groq LLaMA 3.3 70B Versatile",
-            active_label=current_user.gmail_label or settings.GMAIL_LABEL or "Director's AI Assistant",
+            vector_search_engine="InboxIQ Semantic Search (Vector Embeddings)",
+            llm_model="InboxIQ AI Engine (Groq LLaMA 3.3)",
+            active_label=current_user.gmail_label or settings.GMAIL_LABEL or "InboxIQ",
             debug_mode=settings.DEBUG
         )
     except Exception as e:

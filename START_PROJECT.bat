@@ -6,7 +6,7 @@ echo ======================================================
 
 echo.
 echo Starting Application Server (on Port 8000)...
-start "Gmail Assistant App" cmd /k "cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
+start "Gmail Assistant App" cmd /k "cd backend && venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
 
 echo.
 echo Waiting 3 seconds for server to initialize...

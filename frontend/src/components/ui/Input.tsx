@@ -12,7 +12,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
     return (
       <div className="w-full flex flex-col gap-1.5">
         {label && (
-          <label className="text-sm font-medium text-text-secondary">
+          <label className="text-sm font-medium text-text-primary">
             {label}
           </label>
         )}
@@ -20,10 +20,10 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           <input
             ref={ref}
             className={cn(
-              "w-full bg-dark-card border border-dark-border rounded-md px-4 py-2.5 text-text-primary placeholder:text-text-secondary/50",
-              "focus:outline-none focus:border-secondary-blue focus:ring-1 focus:ring-secondary-blue transition-all",
-              "disabled:opacity-50 disabled:cursor-not-allowed",
-              error && "border-status-error focus:border-status-error focus:ring-status-error animate-shake",
+              "w-full bg-white border border-dark-border rounded-lg px-3.5 py-2 text-sm text-text-primary placeholder:text-text-muted",
+              "focus:outline-none focus:border-secondary-blue focus:ring-2 focus:ring-secondary-blue/15 transition-all shadow-sm",
+              "disabled:opacity-50 disabled:bg-slate-50 disabled:cursor-not-allowed",
+              error && "border-status-error focus:border-status-error focus:ring-status-error/15 animate-shake",
               rightIcon && "pr-10",
               className
             )}

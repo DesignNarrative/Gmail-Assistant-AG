@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up Abhinav Group AI Intelligence Assistant")
+    logger.info("Starting up InboxIQ")
     db_ok = await check_db_connection()
     if db_ok:
         logger.info("Database connection successful.")
@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
             await app.state.sync_scheduler_task
         except asyncio.CancelledError:
             pass
-    logger.info("Shutting down Abhinav Group AI Intelligence Assistant")
+    logger.info("Shutting down InboxIQ")
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -97,7 +97,9 @@ async def general_exception_handler(request, exc):
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 # Serve static assets compiled from the frontend build
-app.mount("/assets", StaticFiles(directory=os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/dist/assets"))), name="assets")
+assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/dist/assets"))
+if os.path.isdir(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 @app.get("/health")
 async def health_check():
@@ -111,13 +113,17 @@ async def spa_fallback(request: Request, fallback_path: str):
     if fallback_path.startswith("api/") or fallback_path.startswith("docs") or fallback_path == "openapi.json":
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
     
-    # If the requested path is a direct public file in the frontend build (e.g. logos, assets)
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    public_file_path = os.path.abspath(os.path.join(base_dir, "../../frontend/dist", fallback_path))
+    base_dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/dist"))
+    public_file_path = os.path.abspath(os.path.join(base_dist_dir, fallback_path))
+    
+    # Path traversal protection: ensure resolved path is strictly within frontend/dist
+    if not public_file_path.startswith(base_dist_dir):
+        return JSONResponse(status_code=403, content={"detail": "Access forbidden"})
     
     if os.path.isfile(public_file_path):
         return FileResponse(public_file_path)
         
-    # Otherwise, fallback to serving React index.html for client-side React Router
-    index_path = os.path.abspath(os.path.join(base_dir, "../../frontend/dist/index.html"))
-    return FileResponse(index_path)
+    index_path = os.path.join(base_dist_dir, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+    return JSONResponse(status_code=404, content={"detail": "Frontend not found"})

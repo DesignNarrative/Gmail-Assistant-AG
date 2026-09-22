@@ -1,5 +1,5 @@
 # =============================================================================
-# Abhinav Group — AI Gmail Intelligence Assistant
+# InboxIQ — AI Email Intelligence Assistant
 # Backend Dockerfile — Multi-stage Build
 # =============================================================================
 
@@ -31,10 +31,10 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload
 # --- Production Stage (For Deployment) ---
 FROM base AS production
 RUN useradd -m -s /bin/bash appuser
-USER appuser
-COPY --from=builder /root/.local /home/appuser/.local
-ENV PATH=/home/appuser/.local/bin:$PATH
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --chown=appuser:appuser . .
+USER appuser
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8000/health || exit 1

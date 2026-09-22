@@ -8,30 +8,33 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Inter', 'sans-serif'],
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
       },
       colors: {
         primary: {
-          blue: '#1A4B8C',
-          DEFAULT: '#1A4B8C',
+          blue: '#1E40AF',
+          DEFAULT: '#1E40AF',
+          hover: '#1D4ED8',
         },
         secondary: {
           blue: '#2563EB',
           DEFAULT: '#2563EB',
+          light: '#3B82F6',
         },
         dark: {
-          bg: '#0A1628',
-          card: '#0F1E35',
-          border: '#1E3A5F',
+          bg: '#F8FAFC',
+          card: '#FFFFFF',
+          border: '#E2E8F0',
         },
         gold: {
-          accent: '#C9A84C',
-          light: '#F0C87A',
-          DEFAULT: '#C9A84C',
+          accent: '#D97706',
+          light: '#F59E0B',
+          DEFAULT: '#D97706',
         },
         text: {
-          primary: '#F0F4FF',
-          secondary: '#8BA3C7',
+          primary: '#0F172A',
+          secondary: '#64748B',
+          muted: '#94A3B8',
         },
         status: {
           success: '#10B981',
@@ -40,8 +43,8 @@ export default {
         }
       },
       animation: {
-        'fade-in': 'fadeIn 0.5s ease-out',
-        'slide-up': 'slideUp 0.5s ease-out',
+        'fade-in': 'fadeIn 0.4s ease-out',
+        'slide-up': 'slideUp 0.4s ease-out',
         'shimmer': 'shimmer 2s infinite linear',
         'pulse-glow': 'pulseGlow 2s infinite',
         'shake': 'shake 0.5s cubic-bezier(.36,.07,.19,.97) both',
@@ -52,7 +55,7 @@ export default {
           '100%': { opacity: '1' },
         },
         slideUp: {
-          '0%': { opacity: '0', transform: 'translateY(20px)' },
+          '0%': { opacity: '0', transform: 'translateY(12px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
         },
         shimmer: {
@@ -60,8 +63,8 @@ export default {
           '100%': { backgroundPosition: '200% 0' },
         },
         pulseGlow: {
-          '0%, 100%': { opacity: '1', boxShadow: '0 0 15px rgba(37, 99, 235, 0.5)' },
-          '50%': { opacity: '.8', boxShadow: '0 0 25px rgba(37, 99, 235, 0.8)' },
+          '0%, 100%': { opacity: '1', boxShadow: '0 0 15px rgba(37, 99, 235, 0.2)' },
+          '50%': { opacity: '.8', boxShadow: '0 0 25px rgba(37, 99, 235, 0.35)' },
         },
         shake: {
           '10%, 90%': { transform: 'translate3d(-1px, 0, 0)' },

@@ -94,6 +94,23 @@ async def clear_chat_history(
         logger.error(f"Error clearing chat history: {e}")
         raise HTTPException(status_code=500, detail="Failed to clear chat history")
 
+@router.delete("/messages/{message_id}")
+async def delete_chat_message(
+    message_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        import uuid
+        msg_uuid = uuid.UUID(message_id)
+        stmt = delete(ChatMessage).where(ChatMessage.id == msg_uuid, ChatMessage.user_id == current_user.id)
+        await db.execute(stmt)
+        await db.commit()
+        return {"detail": "Message deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error deleting chat message {message_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete message")
+
 
 @router.get("/export")
 async def export_chat_history(

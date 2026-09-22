@@ -22,7 +22,7 @@ class User(Base):
     last_login_ip = Column(String, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at = Column(DateTime, onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-    gmail_label = Column(String, default="Director's AI Assistant", nullable=False)
+    gmail_label = Column(String, default="InboxIQ", nullable=False)
 
     @property
     def is_gmail_connected(self) -> bool:

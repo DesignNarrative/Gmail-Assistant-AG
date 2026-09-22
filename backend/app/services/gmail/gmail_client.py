@@ -19,9 +19,20 @@ import uuid
 import logging
 import html2text
 import re
+import time
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+# Max new emails to process per single sync run (prevents timeout/rate-limit on huge inboxes)
+BATCH_SIZE = 50
+
+# Gmail API rate limiting: max requests per second
+# Gmail quota is 250 units/sec. messages.get = 5 units → max ~50/sec safe, we use 5/sec
+API_CALL_DELAY = 0.2  # seconds between API calls
+
+# Max attachment file size to attempt download (MB)
+MAX_DOWNLOAD_MB = 25
 
 class GmailSyncService:
     def __init__(self, db: AsyncSession, user: User):
@@ -67,6 +78,34 @@ class GmailSyncService:
         self.creds = creds
         self.service = build('gmail', 'v1', credentials=creds)
         return creds
+
+    def _api_call_with_retry(self, api_callable, max_retries: int = 3):
+        """
+        Execute a Google API call with exponential backoff on rate-limit (429) or server errors (5xx).
+        Also enforces a minimum delay between calls to stay under quota.
+        """
+        import googleapiclient.errors
+        for attempt in range(max_retries):
+            try:
+                time.sleep(API_CALL_DELAY)  # Rate limiting: pause before every API call
+                return api_callable()
+            except googleapiclient.errors.HttpError as e:
+                status_code = e.resp.status
+                if status_code in (429, 500, 502, 503, 504):
+                    # Exponential backoff: 2s, 4s, 8s
+                    wait_seconds = 2 ** (attempt + 1)
+                    logger.warning(
+                        f"Gmail API error {status_code} on attempt {attempt + 1}/{max_retries}. "
+                        f"Retrying in {wait_seconds}s..."
+                    )
+                    time.sleep(wait_seconds)
+                    if attempt == max_retries - 1:
+                        raise
+                else:
+                    # Non-retryable error (400, 401, 403, 404) — raise immediately
+                    raise
+            except Exception:
+                raise
 
     def _parse_headers(self, headers_list: list) -> dict:
         headers = {}
@@ -119,53 +158,100 @@ class GmailSyncService:
         links = re.findall(r'href=[\'"]?(https?://[^\'" >]+)', html_content)
         return list(set(links))
 
-    async def sync_emails(self, sync_log: SyncLog) -> tuple[int, int]:
-        await self.get_credentials()
+    async def sync_batch(
+        self,
+        sync_log: SyncLog,
+        batch_size: int = BATCH_SIZE,
+        failed_ids: set[str] | None = None
+    ) -> tuple[int, int, int, int]:
+        """
+        Syncs up to `batch_size` unsynced emails for the user in reverse-chronological order (newest first).
         
+        Returns:
+            (batch_synced_emails, batch_downloaded_attachments, remaining_unsynced_count, total_found_in_label)
+        """
+        await self.get_credentials()
+        if failed_ids is None:
+            failed_ids = set()
+
         # Determine Gmail label to sync (user custom choice or system default env)
-        label_name = getattr(self.user, 'gmail_label', None) or settings.GMAIL_LABEL or "Director's AI Assistant"
+        label_name = getattr(self.user, 'gmail_label', None) or settings.GMAIL_LABEL or "InboxIQ"
         query = f'label:"{label_name}"'
         logger.info(f"Querying Gmail messages for user {self.user.email} with label query: {query}")
-        
-        emails_count = 0
-        attachments_count = 0
-        
+
         try:
-            # Fetch all messages using pagination
+            # 1. Fetch message IDs from Gmail (maxResults=500 per page for fast pagination)
             messages = []
             page_token = None
-            
+
             while True:
-                results = self.service.users().messages().list(
-                    userId='me', q=query, pageToken=page_token
-                ).execute()
-                
+                results = self._api_call_with_retry(
+                    lambda pt=page_token: self.service.users().messages().list(
+                        userId='me', q=query, pageToken=pt, maxResults=500
+                    ).execute()
+                )
                 messages.extend(results.get('messages', []))
                 page_token = results.get('nextPageToken')
                 if not page_token:
                     break
-            
-            logger.info(f"Total messages found in label '{label_name}' for {self.user.email}: {len(messages)}")
-            os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
-            for msg_meta in messages:
+            total_found = len(messages)
+            logger.info(f"Total messages found in label '{label_name}' for {self.user.email}: {total_found}")
+
+            # Update sync log with total count found so UI can show progress
+            sync_log.total_emails_found = total_found
+            await self.db.commit()
+
+            # 2. Query already synced message IDs for this user
+            stmt = select(Email.message_id).where(Email.user_id == self.user.id)
+            existing_ids = set((await self.db.execute(stmt)).scalars().all())
+
+            # 3. Filter for unsynced message IDs, preserving Gmail's reverse-chronological order (newest first)
+            unsynced_messages = [m for m in messages if m['id'] not in existing_ids and m['id'] not in failed_ids]
+            total_remaining = len(unsynced_messages)
+
+            if not unsynced_messages:
+                logger.info(f"No unsynced emails remaining for user {self.user.email}. (Total in label: {total_found})")
+                return 0, 0, 0, total_found
+
+            batch_to_process = unsynced_messages[:batch_size]
+            logger.info(
+                f"Processing batch of {len(batch_to_process)} emails for {self.user.email} "
+                f"({total_remaining} remaining unsynced out of {total_found} total)"
+            )
+
+            os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+            batch_synced_count = 0
+            batch_attachments_count = 0
+
+            for msg_meta in batch_to_process:
                 msg_id = msg_meta['id']
-                
-                # Check if message already exists FOR THIS USER
+
+                # Check if message already exists FOR THIS USER (per-user deduplication)
                 stmt = select(Email).where(Email.message_id == msg_id, Email.user_id == self.user.id)
                 existing = (await self.db.execute(stmt)).scalars().first()
                 if existing:
                     continue
 
-                # Fetch full message payload
-                msg = self.service.users().messages().get(userId='me', id=msg_id, format='full').execute()
+                # Fetch full message payload (rate-limited + retried)
+                try:
+                    msg = self._api_call_with_retry(
+                        lambda mid=msg_id: self.service.users().messages().get(
+                            userId='me', id=mid, format='full'
+                        ).execute()
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to fetch message {msg_id}: {e}. Skipping and marking as failed for this run.")
+                    failed_ids.add(msg_id)
+                    continue
+
                 payload = msg.get('payload', {})
                 headers = self._parse_headers(payload.get('headers', []))
-                
+
                 subject = headers.get('subject', '(No Subject)')
                 sender = headers.get('from', '')
                 sender_name, sender_email = email.utils.parseaddr(sender)
-                
+
                 # Recipients parsing
                 to_header = headers.get('to', '')
                 recipients = [{"name": n, "email": e} for n, e in [email.utils.parseaddr(x) for x in to_header.split(',')]] if to_header else []
@@ -173,7 +259,7 @@ class GmailSyncService:
                 cc = [{"name": n, "email": e} for n, e in [email.utils.parseaddr(x) for x in cc_header.split(',')]] if cc_header else []
                 bcc_header = headers.get('bcc', '')
                 bcc = [{"name": n, "email": e} for n, e in [email.utils.parseaddr(x) for x in bcc_header.split(',')]] if bcc_header else []
-                
+
                 # Parsing dates
                 date_str = headers.get('date')
                 date_parsed = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -182,10 +268,10 @@ class GmailSyncService:
                         date_parsed = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
                     except Exception:
                         pass
-                
+
                 body_text_raw, body_html = self._get_body(payload)
                 attachments_meta = self._get_attachments_meta(payload)
-                
+
                 # Convert html to clean markdown text if html exists
                 if body_html:
                     h2t = html2text.HTML2Text()
@@ -193,7 +279,6 @@ class GmailSyncService:
                     h2t.ignore_images = False
                     h2t.body_width = 0
                     cleaned_html_text = h2t.handle(body_html)
-                    # Merge text bodies cleanly
                     body_text = cleaned_html_text.strip() if cleaned_html_text.strip() else body_text_raw
                 else:
                     body_text = body_text_raw
@@ -203,12 +288,12 @@ class GmailSyncService:
                 if extracted_links:
                     links_summary = "\n\n🔗 **Extracted Hyperlinks:**\n" + "\n".join([f"- {link}" for link in extracted_links])
                     body_text += links_summary
-                
+
                 # Save Thread record
                 thread_id = msg.get('threadId')
                 stmt = select(Thread).where(Thread.thread_id == thread_id)
                 thread = (await self.db.execute(stmt)).scalars().first()
-                
+
                 if thread:
                     thread.message_count += 1
                     if date_parsed > thread.last_message_at:
@@ -221,7 +306,7 @@ class GmailSyncService:
                         last_message_at=date_parsed
                     )
                     self.db.add(thread)
-                
+
                 # Save Email record with user_id mapping
                 email_record = Email(
                     user_id=self.user.id,
@@ -243,39 +328,54 @@ class GmailSyncService:
                     sync_status="completed"
                 )
                 self.db.add(email_record)
-                await self.db.flush() # Yields email_record.id for foreign keys
-                
-                # Trigger vector embedding task for email text & metadata
-                try:
-                    from app.workers.embedding_tasks import generate_email_embeddings_task
-                    generate_email_embeddings_task.delay(str(email_record.id))
-                    logger.info(f"Queued email embedding task for email {email_record.id}")
-                except Exception as e:
-                    logger.error(f"Failed to queue email embedding task: {e}")
-                
+                await self.db.flush()  # Yields email_record.id for foreign keys
+
                 # Process Attachments
                 for att in attachments_meta:
                     size_mb = att['file_size'] / (1024 * 1024)
+
+                    # Hard skip: larger than configured max
                     if size_mb > settings.MAX_ATTACHMENT_SIZE_MB:
                         logger.warning(f"Skipped attachment {att['filename']} - size {size_mb:.2f}MB exceeds limit of {settings.MAX_ATTACHMENT_SIZE_MB}MB")
                         continue
-                        
+
+                    # Production guard: skip very large files from download to protect RAM
+                    if size_mb > MAX_DOWNLOAD_MB:
+                        logger.warning(
+                            f"Skipped attachment {att['filename']} ({size_mb:.2f}MB) - exceeds "
+                            f"safe download limit of {MAX_DOWNLOAD_MB}MB. Storing metadata only."
+                        )
+                        att_record = Attachment(
+                            email_id=email_record.id,
+                            filename=att['filename'],
+                            mime_type=att['mime_type'],
+                            file_size=att['file_size'],
+                            storage_path=None,
+                            content_hash=None,
+                            is_processed=True  # Mark as processed to skip OCR queue
+                        )
+                        self.db.add(att_record)
+                        batch_attachments_count += 1
+                        continue
+
                     try:
                         logger.info(f"Downloading attachment {att['filename']} ({size_mb:.2f} MB)")
-                        raw_att = self.service.users().messages().attachments().get(
-                            userId='me', messageId=msg_id, id=att['attachment_id']
-                        ).execute()
-                        
+                        raw_att = self._api_call_with_retry(
+                            lambda mid=msg_id, aid=att['attachment_id']: self.service.users().messages().attachments().get(
+                                userId='me', messageId=mid, id=aid
+                            ).execute()
+                        )
+
                         file_data = base64.urlsafe_b64decode(raw_att.get('data', '').encode('utf-8'))
                         content_hash = hashlib.sha256(file_data).hexdigest()
-                        
+
                         file_ext = os.path.splitext(att['filename'])[1]
                         uuid_name = f"{uuid.uuid4()}{file_ext}"
                         storage_path = os.path.join(settings.UPLOAD_DIR, uuid_name)
-                        
+
                         with open(storage_path, 'wb') as f:
                             f.write(file_data)
-                            
+
                         att_record = Attachment(
                             email_id=email_record.id,
                             filename=att['filename'],
@@ -285,15 +385,25 @@ class GmailSyncService:
                             content_hash=content_hash
                         )
                         self.db.add(att_record)
-                        attachments_count += 1
+                        batch_attachments_count += 1
                     except Exception as e:
                         logger.error(f"Failed to download attachment {att['filename']}: {e}")
-                        
-                emails_count += 1
+
+                batch_synced_count += 1
+
+                # Update live progress on SyncLog after each email so UI can show progress in real-time
+                sync_log.emails_synced = (sync_log.emails_synced or 0) + 1
+                sync_log.attachments_downloaded = (sync_log.attachments_downloaded or 0) + batch_attachments_count
                 await self.db.commit()
+
+            remaining_after_batch = max(0, total_remaining - batch_synced_count)
+            return batch_synced_count, batch_attachments_count, remaining_after_batch, total_found
 
         except Exception as e:
             logger.error(f"Gmail synchronization failed: {e}")
             raise e
-            
-        return emails_count, attachments_count
+
+    async def sync_emails(self, sync_log: SyncLog) -> tuple[int, int]:
+        """Runs a single batch sync (for backwards compatibility)."""
+        new_synced, att_count, _, _ = await self.sync_batch(sync_log, batch_size=BATCH_SIZE)
+        return new_synced, att_count

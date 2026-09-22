@@ -7,6 +7,7 @@ export interface SyncLogEntry {
   status: string;
   emails_synced: number;
   attachments_downloaded: number;
+  total_emails_found?: number;
   error_message: string | null;
   started_at: string;
   completed_at: string | null;
@@ -14,6 +15,7 @@ export interface SyncLogEntry {
 
 export interface SyncStats {
   total_emails: number;
+  undownloaded_emails?: number;
   total_threads: number;
   total_attachments: number;
   total_size_bytes: number;
@@ -38,6 +40,11 @@ export const gmailApi = {
 
   updateGmailLabel: async (gmail_label: string): Promise<{ detail: string; gmail_label: string }> => {
     const response = await client.put('/api/v1/gmail/settings/label', { gmail_label });
+    return response.data;
+  },
+
+  disconnectGmail: async (delete_synced_data: boolean = false): Promise<{ detail: string; data_deleted: boolean }> => {
+    const response = await client.post('/api/v1/gmail/disconnect', { delete_synced_data });
     return response.data;
   }
 };

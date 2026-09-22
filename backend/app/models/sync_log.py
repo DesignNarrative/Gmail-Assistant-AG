@@ -12,6 +12,7 @@ class SyncLog(Base):
     status = Column(String, default="running")       # running, success, failed
     emails_synced = Column(Integer, default=0)
     attachments_downloaded = Column(Integer, default=0)
+    total_emails_found = Column(Integer, default=0)   # Total messages found in Gmail label this run
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     completed_at = Column(DateTime, nullable=True)

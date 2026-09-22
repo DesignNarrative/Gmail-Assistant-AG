@@ -28,5 +28,9 @@ export const chatApi = {
 
   clearHistory: async (): Promise<void> => {
     await client.delete('/api/v1/chat/history');
+  },
+
+  deleteMessage: async (id: string): Promise<void> => {
+    await client.delete(`/api/v1/chat/messages/${id}`);
   }
 };

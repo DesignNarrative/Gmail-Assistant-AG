@@ -2,10 +2,11 @@ from app.workers.celery_app import celery_app
 from app.models.user import User
 from app.models.sync_log import SyncLog
 from app.models.attachment import Attachment
+from app.models.email import Email
 from app.services.gmail.gmail_client import GmailSyncService
 from app.core.config import get_settings
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, join
 from datetime import datetime, timezone
 import uuid
 import asyncio
@@ -30,6 +31,12 @@ def get_fresh_session_factory():
     return async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False), engine
 
 
+# In-memory concurrency locks to prevent overlapping duplicate tasks
+_active_sync_users: set[str] = set()
+_active_ocr_attachments: set[str] = set()
+_active_embedding_emails: set[str] = set()
+
+
 # Deprecated Celery task - keeping wrapper for interface compatibility, but core runs async
 @celery_app.task(name="app.workers.sync_tasks.sync_gmail_label_task")
 def sync_gmail_label_task(user_id_str: str, sync_log_id_str: str):
@@ -37,7 +44,21 @@ def sync_gmail_label_task(user_id_str: str, sync_log_id_str: str):
     asyncio.run(run_sync_gmail_label(user_id_str, sync_log_id_str))
 
 async def run_sync_gmail_label(user_id_str: str, sync_log_id_str: str):
-    logger.info(f"Running async sync_gmail_label for user {user_id_str}, Log ID: {sync_log_id_str}")
+    """
+    Continuous 50-by-50 progressive sync loop:
+    1. Downloads 50 emails + attachments.
+    2. Commits them safely to DB and updates live progress.
+    3. Queues background OCR and AI vector embeddings.
+    4. Automatically pauses 2 seconds, then drains the next 50 until 0 remain.
+    5. Prioritizes brand-new incoming emails dynamically on each iteration.
+    """
+    if user_id_str in _active_sync_users:
+        logger.info(f"Sync already actively running for user {user_id_str}. Ignoring duplicate invocation.")
+        return
+
+    _active_sync_users.add(user_id_str)
+    logger.info(f"Acquired sync lock for user {user_id_str}. Running continuous sync (Log ID: {sync_log_id_str})")
+
     user_id = uuid.UUID(user_id_str)
     sync_log_id = uuid.UUID(sync_log_id_str)
     SessionLocal, engine = get_fresh_session_factory()
@@ -54,46 +75,117 @@ async def run_sync_gmail_label(user_id_str: str, sync_log_id_str: str):
                 logger.error(f"SyncLog {sync_log_id_str} not found")
                 return
 
-            try:
-                sync_service = GmailSyncService(db, user)
-                emails_count, att_count = await sync_service.sync_emails(sync_log)
+            sync_service = GmailSyncService(db, user)
+            failed_message_ids: set[str] = set()
 
-                sync_log.status = "success"
-                sync_log.emails_synced = emails_count
-                sync_log.attachments_downloaded = att_count
-                sync_log.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
-                await db.commit()
-                logger.info(f"Sync completed. Emails: {emails_count}, Attachments: {att_count}")
+            while True:
+                batch_synced, batch_att, remaining, total_found = await sync_service.sync_batch(
+                    sync_log,
+                    batch_size=50,
+                    failed_ids=failed_message_ids
+                )
+                logger.info(
+                    f"User {user.email}: Batch synced {batch_synced} emails, {batch_att} attachments. "
+                    f"Remaining unsynced: {remaining} (Total in label: {total_found})"
+                )
 
-                # After sync, run OCR + embedding for all unprocessed attachments directly in background
-                if att_count > 0:
-                    unprocessed = (await db.execute(
-                        select(Attachment).where(Attachment.is_processed == False)
-                    )).scalars().all()
-                    for att in unprocessed:
-                        from app.workers.ocr_tasks import run_process_attachment
-                        logger.info(f"Triggering direct OCR for attachment {att.id} ({att.filename})")
-                        # Run sequentially to keep CPU usage low on local laptop
-                        await run_process_attachment(str(att.id))
+                # ── Launch OCR for unprocessed attachments belonging to THIS user in background ──
+                unprocessed = (await db.execute(
+                    select(Attachment)
+                    .join(Email, Email.id == Attachment.email_id)
+                    .where(
+                        Attachment.is_processed == False,
+                        Email.user_id == user.id
+                    )
+                )).scalars().all()
 
-                # Also generate email embeddings directly in background for UNPROCESSED emails
-                from app.models.email import Email
+                if unprocessed:
+                    pending_att_ids = [str(att.id) for att in unprocessed if str(att.id) not in _active_ocr_attachments]
+                    if pending_att_ids:
+                        asyncio.create_task(_run_ocr_background(pending_att_ids))
+
+                # ── Launch vector embeddings for unprocessed emails in background ──
                 unprocessed_emails = (await db.execute(
                     select(Email).where(Email.user_id == user.id, Email.is_processed == False)
                 )).scalars().all()
-                for email in unprocessed_emails:
-                    from app.workers.embedding_tasks import run_generate_email_embeddings
-                    logger.info(f"Triggering direct email embedding for email {email.id} ({email.subject})")
-                    await run_generate_email_embeddings(str(email.id))
 
-            except Exception as e:
-                logger.error(f"Sync task failed: {e}", exc_info=True)
-                sync_log.status = "failed"
-                sync_log.error_message = str(e)
-                sync_log.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
-                await db.commit()
+                if unprocessed_emails:
+                    pending_email_ids = [str(e.id) for e in unprocessed_emails if str(e.id) not in _active_embedding_emails]
+                    if pending_email_ids:
+                        asyncio.create_task(_run_email_embeddings_background(pending_email_ids))
+
+                # If no emails were synced in this batch or no unsynced emails remain in label, complete
+                if batch_synced == 0 or remaining == 0:
+                    logger.info(
+                        f"All emails synced for user {user.email}. "
+                        f"Total emails: {sync_log.emails_synced}, attachments: {sync_log.attachments_downloaded}"
+                    )
+                    sync_log.status = "success"
+                    sync_log.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                    await db.commit()
+                    break
+
+                # Safe pause between 50-email batches: protects Google rate limit quota & CPU
+                await asyncio.sleep(2.0)
+
+    except Exception as e:
+        logger.error(f"Continuous sync task failed: {e}", exc_info=True)
+        try:
+            async with SessionLocal() as db:
+                sync_log = (await db.execute(select(SyncLog).where(SyncLog.id == sync_log_id))).scalars().first()
+                if sync_log:
+                    sync_log.status = "failed"
+                    sync_log.error_message = str(e)
+                    sync_log.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                    await db.commit()
+        except Exception as log_err:
+            logger.error(f"Failed to record sync failure state: {log_err}")
     finally:
+        _active_sync_users.discard(user_id_str)
+        logger.info(f"Released sync lock for user {user_id_str}")
         await engine.dispose()
+
+
+async def _run_ocr_background(attachment_id_list: list[str]):
+    """
+    Background coroutine: processes OCR for a list of attachment IDs sequentially.
+    Runs independently in background, guarded against concurrent duplicate processing.
+    """
+    from app.workers.ocr_tasks import run_process_attachment
+    logger.info(f"Background OCR worker started for {len(attachment_id_list)} attachment(s)")
+    for att_id_str in attachment_id_list:
+        if att_id_str in _active_ocr_attachments:
+            continue
+        _active_ocr_attachments.add(att_id_str)
+        try:
+            logger.info(f"Background OCR processing attachment {att_id_str}")
+            await run_process_attachment(att_id_str)
+        except Exception as e:
+            logger.error(f"Background OCR failed for attachment {att_id_str}: {e}", exc_info=True)
+        finally:
+            _active_ocr_attachments.discard(att_id_str)
+    logger.info("Background OCR batch complete")
+
+
+async def _run_email_embeddings_background(email_id_list: list[str]):
+    """
+    Background coroutine: generates vector embeddings for a list of email IDs sequentially.
+    Runs independently in background, guarded against concurrent duplicate processing.
+    """
+    from app.workers.embedding_tasks import run_generate_email_embeddings
+    logger.info(f"Background email embedding worker started for {len(email_id_list)} email(s)")
+    for email_id_str in email_id_list:
+        if email_id_str in _active_embedding_emails:
+            continue
+        _active_embedding_emails.add(email_id_str)
+        try:
+            logger.info(f"Background embedding for email {email_id_str}")
+            await run_generate_email_embeddings(email_id_str)
+        except Exception as e:
+            logger.error(f"Background embedding failed for email {email_id_str}: {e}", exc_info=True)
+        finally:
+            _active_embedding_emails.discard(email_id_str)
+    logger.info("Background email embedding batch complete")
 
 
 # Deprecated Celery task - keeping wrapper for interface compatibility, but core runs async

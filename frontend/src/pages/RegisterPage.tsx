@@ -1,9 +1,9 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import LoginForm from '../components/auth/LoginForm';
+import RegisterForm from '../components/auth/RegisterForm';
 import { Search, Bot, ShieldCheck } from 'lucide-react';
 
-export default function LoginPage() {
+export default function RegisterPage() {
   return (
     <div className="min-h-screen w-full flex bg-slate-50 animated-bg">
       {/* Left Panel */}
@@ -21,13 +21,13 @@ export default function LoginPage() {
           </div>
           
           <h1 className="text-4xl font-extrabold tracking-tight text-white mb-6 leading-tight">
-            Transform your emails into <br />
+            Your inbox, your personal <br />
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-300 via-amber-200 to-yellow-100">
-              instant intelligence
+              knowledge base
             </span>
           </h1>
           <p className="text-slate-300 text-base mb-10 leading-relaxed max-w-md">
-            Ask questions, search through attachments, and get instant factual answers from your entire inbox.
+            Connect your Gmail in seconds and start getting answers to any question about your past emails and files.
           </p>
           
           <div className="space-y-6">
@@ -58,11 +58,11 @@ export default function LoginPage() {
           </div>
           
           <div className="text-center mb-8">
-            <h2 className="text-2xl font-bold text-slate-900 mb-1">Welcome back</h2>
-            <p className="text-slate-500 text-sm">Sign in to your account</p>
+            <h2 className="text-2xl font-bold text-slate-900 mb-1">Create your account</h2>
+            <p className="text-slate-500 text-sm">Start exploring your inbox with AI</p>
           </div>
           
-          <LoginForm />
+          <RegisterForm />
 
           <div className="mt-8 pt-4 border-t border-slate-100 text-center text-xs text-slate-400">
             <Link to="/privacy" className="hover:text-blue-600 transition-colors">Privacy Policy</Link>
